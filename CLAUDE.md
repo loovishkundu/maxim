@@ -27,16 +27,9 @@ tools agree with each other.
 `uv run pytest` must be green before committing. Tests use a FakeLLM — no
 network or API key needed.
 
-## Environment quirk
+## Environment note
 
-This repo lives on an iCloud-synced Desktop, and iCloud sets macOS hidden
-flags inside synced dirs — Python 3.12 silently skips hidden `.pth` files,
-breaking the editable install. The venv therefore lives in `.venv.nosync`
-(iCloud ignores `.nosync` names) with `.venv` as a symlink to it. If the
-symlink is ever lost, recreate with:
-
-```bash
-UV_PROJECT_ENVIRONMENT=.venv.nosync uv sync && ln -s .venv.nosync .venv
-```
-
-Fallback if imports still break: `chflags -R nohidden .venv.nosync`.
+Keep this repo on a non-iCloud-synced path (it lives at `~/dev/maxim`).
+iCloud-synced locations (Desktop/Documents) set hidden flags inside `.venv`
+that make Python 3.12 silently skip `.pth` files, breaking the editable
+install — that's why the repo was moved off the Desktop on 2026-07-03.
