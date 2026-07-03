@@ -132,11 +132,13 @@ class Settings:
     critic_model: str = "claude-haiku-4-5"
     critic_escalation_model: str = "claude-opus-4-8"
     critic_batch_size: int = 8
+    canonicalizer_model: str = "claude-haiku-4-5"
     synthesizer_model: str = "claude-opus-4-8"
 
     planner_effort: str = "medium"
     critic_effort: str = "low"
     critic_escalation_effort: str = "low"
+    canonicalizer_effort: str = "low"
     synthesizer_effort: str = "high"
 
     max_parse_retries: int = 2

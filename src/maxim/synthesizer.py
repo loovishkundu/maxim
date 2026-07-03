@@ -41,13 +41,22 @@ def _findings_payload(dossier: ResearchDossier) -> list[dict]:
     ]
 
 
-def build_synthesis_input(plan: ResearchPlan, dossiers: list[ResearchDossier]) -> str:
+def build_synthesis_input(
+    plan: ResearchPlan,
+    dossiers: list[ResearchDossier],
+    canonical_methods: list[str] | None = None,
+) -> str:
     parts: list[str] = [
         f"Topic: {plan.topic}",
         f"Domain: {plan.domain}",
         f"Planner rationale: {plan.rationale}",
         f"Assumptions made: {json.dumps(plan.assumptions)}",
     ]
+    if canonical_methods:
+        parts.append(
+            "Canonical method names (use EXACTLY these spellings in the Method "
+            f"Landscape table): {json.dumps(canonical_methods, ensure_ascii=False)}"
+        )
     if plan.out_of_scope:
         parts.append(
             "Out-of-scope perspectives: "
@@ -80,12 +89,18 @@ async def synthesize(
     dossiers: list[ResearchDossier],
     settings: Settings,
     llm: LLM,
+    canonical_methods: list[str] | None = None,
     on_text: Callable[[str], None] | None = None,
 ) -> StreamResult:
     return await llm.stream_text(
         stage="synthesizer",
         system=SYNTHESIZER_SYSTEM,
-        messages=[{"role": "user", "content": build_synthesis_input(plan, dossiers)}],
+        messages=[
+            {
+                "role": "user",
+                "content": build_synthesis_input(plan, dossiers, canonical_methods),
+            }
+        ],
         model=settings.synthesizer_model,
         effort=settings.synthesizer_effort,
         max_tokens=settings.preset.synthesis_max_tokens,

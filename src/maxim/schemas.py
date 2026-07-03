@@ -170,6 +170,20 @@ class CoverageResult(StrictModel):
     coverage_gaps: list[str]
 
 
+# ---------------------------------------------------------------- canonicalization
+
+
+class MethodGroup(StrictModel):
+    canonical: str
+    variants: list[str]
+
+
+class CanonicalMethods(StrictModel):
+    """Canonicalizer output: every input name grouped under one canonical name."""
+
+    groups: list[MethodGroup]
+
+
 # ------------------------------------------------------------------------ dossier
 
 
@@ -222,6 +236,9 @@ class RunResult(StrictModel):
     topic: str
     plan: ResearchPlan
     dossiers: list[ResearchDossier]
+    # Canonical method names shared across perspectives (wave-1 union after
+    # canonicalization) — the vocabulary of the Method Landscape table.
+    canonical_methods: list[str] = Field(default_factory=list)
     report_markdown: str
     usage: RunUsage
     partial: bool

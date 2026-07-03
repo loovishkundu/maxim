@@ -11,10 +11,12 @@ import maxim.orchestrator as orchestrator
 from maxim.config import Settings
 from maxim.llm import AgenticResult, LLMError, SourceDoc, StreamResult
 from maxim.schemas import (
+    CanonicalMethods,
     ClaimVerdict,
     CoverageResult,
     CritiqueResult,
     DraftDossier,
+    MethodGroup,
     ResearchPlan,
 )
 from maxim.usage import UsageLedger
@@ -28,13 +30,17 @@ class FakeLLM:
         fail_perspectives=frozenset(),
         synth_stop_reason="end_turn",
         synth_raises=False,
+        perspectives=("ai_agentic", "statistics"),
     ):
         self.settings = settings
         self.ledger = ledger
         self.fail_perspectives = fail_perspectives
         self.synth_stop_reason = synth_stop_reason
         self.synth_raises = synth_raises
+        self.perspectives = perspectives
         self.draft_calls: dict[str, int] = {}
+        self.agentic_stages: list[str] = []
+        self.agentic_messages: dict[str, str] = {}
 
     async def close(self):
         pass
@@ -43,7 +49,16 @@ class FakeLLM:
         self, *, stage, system, messages, output_format, model, effort, max_tokens=16_000
     ):
         if output_format is ResearchPlan:
-            return make_plan()
+            return make_plan(self.perspectives)
+        if output_format is CanonicalMethods:
+            return CanonicalMethods(
+                groups=[
+                    MethodGroup(
+                        canonical="STL decomposition", variants=["STL decomposition", "STL"]
+                    ),
+                    MethodGroup(canonical="Prophet", variants=["Prophet"]),
+                ]
+            )
         if output_format is DraftDossier:
             # First pass drafts 3 good findings + 1 fabricated quote. The loop
             # then RE-VALIDATEs; the repair pass legitimately drops the broken
@@ -54,11 +69,12 @@ class FakeLLM:
             return DraftDossier(summary="", findings=[], methods_identified=[], gaps=[])
         if output_format is CritiqueResult:
             # The fabricated finding (drafted 4th) never reaches the critic;
-            # survivors keep ids 1-3 in both perspectives.
+            # survivors keep ids 1-3 in every perspective.
             return CritiqueResult(
                 verdicts=[
-                    ClaimVerdict(finding_id=fid, verdict="supported", fix_hint=None)
-                    for fid in ("F-ai1", "F-ai2", "F-ai3", "F-st1", "F-st2", "F-st3")
+                    ClaimVerdict(finding_id=f"F-{p}{n}", verdict="supported", fix_hint=None)
+                    for p in ("ai", "st", "cm")
+                    for n in (1, 2, 3)
                 ],
                 coverage_gaps=[],
             )
@@ -80,6 +96,8 @@ class FakeLLM:
         on_progress=None,
     ):
         perspective = stage.split(":", 1)[1]
+        self.agentic_stages.append(stage)
+        self.agentic_messages.setdefault(stage, messages[0]["content"])
         if perspective in self.fail_perspectives:
             raise RuntimeError("boom: simulated researcher crash")
         return AgenticResult(
@@ -107,10 +125,14 @@ def _settings(**kwargs) -> Settings:
 
 
 def _install(monkeypatch, **fake_kwargs):
+    holder: dict[str, FakeLLM] = {}
+
     def factory(settings, ledger):
-        return FakeLLM(settings, ledger, **fake_kwargs)
+        holder["llm"] = FakeLLM(settings, ledger, **fake_kwargs)
+        return holder["llm"]
 
     monkeypatch.setattr(orchestrator, "LLM", factory)
+    return holder
 
 
 async def test_happy_path(monkeypatch):
@@ -243,3 +265,30 @@ async def test_plan_rejected(monkeypatch):
         pass
     else:
         raise AssertionError("expected PlanRejected")
+
+
+async def test_two_wave_community_seeded_with_canonical_methods(monkeypatch):
+    holder = _install(monkeypatch, perspectives=("ai_agentic", "statistics", "community"))
+    events: list[tuple[str, str]] = []
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda label, msg: events.append((label, msg)),
+        confirm=lambda plan: True,
+    )
+    fake = holder["llm"]
+
+    # Wave order: community's first gather comes after both wave-1 gathers.
+    first_gather_index = {stage: i for i, stage in reversed(list(enumerate(fake.agentic_stages)))}
+    assert first_gather_index["researcher:community"] > first_gather_index["researcher:ai_agentic"]
+    assert first_gather_index["researcher:community"] > first_gather_index["researcher:statistics"]
+
+    # The community brief was reseeded with the canonicalized wave-1 methods.
+    community_msg = fake.agentic_messages["researcher:community"]
+    assert "STL decomposition" in community_msg
+    assert "Prophet" in community_msg
+
+    assert result.canonical_methods == ["STL decomposition", "Prophet"]
+    assert any(label == "canonicalizer" for label, _ in events)
+    by_perspective = {d.perspective: d for d in result.dossiers}
+    assert set(by_perspective) == {"ai_agentic", "statistics", "community"}

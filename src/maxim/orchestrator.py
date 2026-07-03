@@ -1,4 +1,9 @@
-"""Pipeline glue: plan → confirm → fan-out researchers → synthesize → report.
+"""Pipeline glue: plan → confirm → two-wave fan-out → synthesize → report.
+
+Wave 1 runs the technical perspectives in parallel; their method names are
+then canonicalized (one cheap call) and the community researcher runs as
+wave 2, seeded with the union of methods wave 1 ACTUALLY found — sentiment
+about methods nobody surfaced is noise.
 
 `run_pipeline` is the single programmatic seam (no global state, no printing —
 progress goes through a callback), which is what keeps the future Claude skill
@@ -13,6 +18,7 @@ from collections.abc import Callable
 
 from .config import Settings
 from .llm import LLM, LLMError
+from .methods import apply_canonical_names, canonical_names, canonicalize_methods
 from .planner import make_plan
 from .report import assemble_report, fallback_report
 from .researcher import run_researcher, stub_dossier
@@ -97,7 +103,31 @@ async def run_pipeline(
                     searches, fetches = ledger.stage_counts(label)
                     return stub_dossier(brief, str(exc), searches, fetches)
 
-        dossiers = list(await asyncio.gather(*(guarded(b) for b in plan.briefs)))
+        wave1_briefs = [b for b in plan.briefs if b.perspective != "community"]
+        community_brief = next((b for b in plan.briefs if b.perspective == "community"), None)
+
+        dossiers = list(await asyncio.gather(*(guarded(b) for b in wave1_briefs)))
+
+        # Canonicalize method names across wave 1 so the landscape table and
+        # the community wave speak one vocabulary.
+        methods_union = [m for d in dossiers for m in d.methods_identified]
+        mapping: dict[str, str] = {}
+        if methods_union:
+            progress("canonicalizer", f"normalizing {len(set(methods_union))} method names…")
+            mapping = await canonicalize_methods(methods_union, settings, llm)
+            dossiers = [apply_canonical_names(d, mapping) for d in dossiers]
+        canonical = canonical_names(mapping)
+
+        if community_brief is not None:
+            if canonical:
+                # Seed wave 2 with what wave 1 actually found, not planner
+                # guesses; the planner's own seeds stay as a fallback when
+                # wave 1 surfaced nothing.
+                community_brief = community_brief.model_copy(
+                    update={"must_cover_methods": canonical}
+                )
+            community_dossier = apply_canonical_names(await guarded(community_brief), mapping)
+            dossiers.append(community_dossier)
 
         if ledger.unknown_models:
             models = ", ".join(sorted(ledger.unknown_models))
@@ -118,7 +148,12 @@ async def run_pipeline(
             progress("synthesizer", "writing report…")
             try:
                 synthesis = await synthesize(
-                    plan, dossiers, settings, llm, on_text=on_synthesis_text
+                    plan,
+                    dossiers,
+                    settings,
+                    llm,
+                    canonical_methods=canonical,
+                    on_text=on_synthesis_text,
                 )
             except LLMError as exc:
                 # The research is already paid for — degrade to the raw dump
@@ -163,6 +198,7 @@ async def run_pipeline(
             topic=topic,
             plan=plan,
             dossiers=dossiers,
+            canonical_methods=canonical,
             report_markdown=report_md,
             usage=ledger.to_run_usage(),
             partial=partial,

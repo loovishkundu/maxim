@@ -175,6 +175,18 @@ you more skeptical, not less.
 source could rescue the claim.
 5. Fill coverage_gaps with sub-questions from the brief that no finding addresses."""
 
+CANONICALIZER_SYSTEM = """\
+You canonicalize method names collected by parallel research agents so one method does \
+not fragment the landscape under several spellings ("XGBoost" vs "gradient boosted \
+trees" vs "GBT").
+
+Group the given names: variants that refer to the same method or technique belong to \
+one group, with the clearest, most widely used name as `canonical`. Rules:
+1. Every input name appears in exactly one group's variants (a group of one is fine).
+2. Never merge genuinely different methods — when unsure, keep them separate.
+3. `canonical` should be one of the input spellings unless a strictly clearer standard \
+name exists."""
+
 COVERAGE_SYSTEM = """\
 You are the coverage checker inside Maxim. You receive a research brief's sub-questions \
 and the full list of claims a researcher produced. List in coverage_gaps every \

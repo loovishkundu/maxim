@@ -32,6 +32,11 @@ def make_brief(perspective="ai_agentic") -> ResearchBrief:
 
 
 def make_plan(perspectives=("ai_agentic", "statistics")) -> ResearchPlan:
+    out_of_scope = (
+        []
+        if "community" in perspectives
+        else [OutOfScope(perspective="community", reason="test fixture")]
+    )
     return ResearchPlan(
         topic="anomaly detection for vehicle telemetry",
         domain="time-series anomaly detection",
@@ -39,7 +44,7 @@ def make_plan(perspectives=("ai_agentic", "statistics")) -> ResearchPlan:
         assumptions=["streaming telemetry, not batch"],
         recency_horizon_months=24,
         briefs=[make_brief(p) for p in perspectives],
-        out_of_scope=[OutOfScope(perspective="community", reason="test fixture")],
+        out_of_scope=out_of_scope,
     )
 
 
