@@ -94,7 +94,15 @@ async def critique(
     source_cache: dict[str, SourceDoc],
     settings: Settings,
     llm: LLM,
+    all_claims: list[str] | None = None,
 ) -> CritiqueResult:
+    """Judge `findings`; assess coverage against `all_claims` when given.
+
+    On repair passes the findings are only the repaired slice, but coverage
+    must be judged against everything the dossier already holds — otherwise
+    sub-questions answered by frozen findings read as phantom gaps and can
+    trigger a spurious REPLAN.
+    """
     verdicts: dict[str, ClaimVerdict] = {}
     for batch in _batches(findings, settings.critic_batch_size):
         payload = build_payload(brief, batch, source_cache) + _BATCH_COVERAGE_NOTE
@@ -129,13 +137,14 @@ async def critique(
             if _normalize_id(v.finding_id) == norm_id:
                 verdicts[norm_id] = v
 
+    claims_for_coverage = all_claims if all_claims is not None else [f.claim for f in findings]
     coverage_payload = "\n".join(
         [
             "Research brief sub-questions:",
             json.dumps(brief.sub_questions),
             "",
             "Claims produced:",
-            *(f"- {f.claim}" for f in findings),
+            *(f"- {claim}" for claim in claims_for_coverage),
         ]
     )
     coverage: CoverageResult = await llm.parse(

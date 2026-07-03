@@ -71,11 +71,23 @@ def cr(verdicts, gaps=None) -> CritiqueResult:
 class ScriptedLLM:
     """Pops scripted drafts/critiques per call; records every agentic turn."""
 
-    def __init__(self, drafts, critiques, budget_usd=10.0, briefs=None, replan_raises=False):
+    def __init__(
+        self,
+        drafts,
+        critiques,
+        budget_usd=10.0,
+        briefs=None,
+        replan_raises=False,
+        draft_error_on=None,
+        truncate_calls=(),
+    ):
         self.drafts = list(drafts)
         self.critiques = list(critiques)
         self.briefs = list(briefs or [])
         self.replan_raises = replan_raises
+        self.draft_error_on = draft_error_on  # 1-based draft-parse call number
+        self.truncate_calls = set(truncate_calls)  # 1-based agentic call numbers
+        self.draft_calls = 0
         self.ledger = UsageLedger(budget_usd=budget_usd)
         self.agentic_calls: list[dict] = []
         self.parse_calls: list[dict] = []
@@ -86,6 +98,9 @@ class ScriptedLLM:
             {"stage": stage, "messages": messages, "output_format": output_format}
         )
         if output_format is DraftDossier:
+            self.draft_calls += 1
+            if self.draft_calls == self.draft_error_on:
+                raise LLMError("researcher: structured output failed validation")
             return self.drafts.pop(0)
         if output_format is CritiqueResult:
             self._last_critique = self.critiques.pop(0)
@@ -112,7 +127,7 @@ class ScriptedLLM:
             },
             cited_quotes=[],
             continuations=0,
-            truncated=False,
+            truncated=len(self.agentic_calls) in self.truncate_calls,
             queries=[f"scripted query {len(self.agentic_calls)}"],
         )
 
@@ -382,3 +397,132 @@ async def test_retry_cap_exhausts_then_accepts():
     assert dossier.iterations == 3
     # Weak repairs supersede by method name each round: 4 findings remain.
     assert len(dossier.findings) == 4
+
+
+async def test_coverage_judged_against_frozen_claims_on_repair_passes():
+    # Pass 1 covers everything; pass 2 repairs two weak claims. The coverage
+    # judge must still see the frozen pass-1 claims, else answered
+    # sub-questions read as phantom gaps and trigger a spurious REPLAN.
+    draft1 = dd([df(f"claim {i}", f"m{i}") for i in range(1, 6)])
+    critique1 = cr(
+        [(f"F-ai{i}", "supported", None) for i in range(1, 4)]
+        + [
+            ("F-ai4", "partially_supported", None),
+            ("F-ai5", "partially_supported", None),
+        ]
+    )
+    draft2 = dd(
+        [
+            df("claim 4 repaired", "m4", quote=REPAIR_QUOTE, url=REPAIR_URL),
+            df("claim 5 repaired", "m5", quote=REPAIR_QUOTE, url=REPAIR_URL),
+        ]
+    )
+    critique2 = cr([("F-ai6", "supported", None), ("F-ai7", "supported", None)])
+    llm = ScriptedLLM(drafts=[draft1, draft2], critiques=[critique1, critique2])
+
+    await _run(llm)
+
+    coverage_payloads = [
+        c["messages"][0]["content"] for c in llm.parse_calls if c["output_format"] is CoverageResult
+    ]
+    assert len(coverage_payloads) == 2
+    # Pass-2 coverage sees frozen claims AND the repaired survivors.
+    assert "claim 1" in coverage_payloads[1]
+    assert "claim 4 repaired" in coverage_payloads[1]
+
+
+async def test_later_rejection_evicts_stale_weak_twin():
+    # Pass 1 validates "claim 4" weakly; the retry resubmits the same claim
+    # with new evidence and the critic (after opus arbitration) says
+    # contradicted. The newer verdict must win: the weak twin leaves the
+    # findings and the contradiction is recorded, never silently erased.
+    draft1 = dd([df(f"claim {i}", f"m{i}") for i in range(1, 6)])
+    critique1 = cr(
+        [(f"F-ai{i}", "supported", None) for i in range(1, 4)]
+        + [
+            ("F-ai4", "partially_supported", None),
+            ("F-ai5", "partially_supported", None),
+        ]
+    )
+    draft2 = dd(
+        [
+            df("claim 4", "m4", quote=REPAIR_QUOTE, url=REPAIR_URL),
+            df("claim 6", "m6", quote=REPAIR_QUOTE, url=REPAIR_URL),
+        ]
+    )
+    critique2_batch = cr([("F-ai6", "contradicted", None), ("F-ai7", "supported", None)])
+    critique2_arbitration = cr([("F-ai6", "contradicted", None)])
+    draft3 = dd([])
+    llm = ScriptedLLM(
+        drafts=[draft1, draft2, draft3],
+        critiques=[critique1, critique2_batch, critique2_arbitration],
+    )
+
+    dossier = await _run(llm)
+
+    claims = [f.claim for f in dossier.findings]
+    assert "claim 4" not in claims  # stale weak twin evicted by the newer verdict
+    assert "claim 6" in claims
+    assert any(
+        r.finding.claim == "claim 4" and "contradicted" in r.reason for r in dossier.rejected
+    )
+
+
+async def test_duplicate_rejections_collapse_to_one_entry():
+    broken = "this text is in no fetched page at all"
+    draft1 = dd(
+        [df(f"claim {i}", f"m{i}") for i in range(1, 4)]
+        + [df("broken-quote claim", "m4", quote=broken)]
+    )
+    critique1 = cr([(f"F-ai{i}", "supported", None) for i in range(1, 4)])
+    # The repair pass re-submits the same broken claim with the same bad quote.
+    draft2 = dd([df("broken-quote claim", "m4", quote=broken)])
+    critique2 = cr([])
+    llm = ScriptedLLM(drafts=[draft1, draft2], critiques=[critique1, critique2])
+
+    dossier = await _run(llm)
+
+    matching = [r for r in dossier.rejected if r.finding.claim == "broken-quote claim"]
+    assert len(matching) == 1  # not one entry per failed pass
+
+
+async def test_repair_gather_truncation_is_disclosed():
+    draft1 = dd([df(f"claim {i}", f"m{i}") for i in range(1, 6)])
+    critique1 = cr(
+        [(f"F-ai{i}", "supported", None) for i in range(1, 4)]
+        + [
+            ("F-ai4", "partially_supported", None),
+            ("F-ai5", "partially_supported", None),
+        ]
+    )
+    draft2 = dd([df("claim 4 repaired", "m4", quote=REPAIR_QUOTE, url=REPAIR_URL)])
+    critique2 = cr([("F-ai6", "supported", None)])
+    llm = ScriptedLLM(
+        drafts=[draft1, draft2],
+        critiques=[critique1, critique2],
+        truncate_calls={2},  # the retry gather hits a cap
+    )
+
+    dossier = await _run(llm)
+
+    assert any("stopped early" in g for g in dossier.gaps)
+
+
+async def test_mid_loop_draft_failure_salvages_validated_findings():
+    draft1 = dd([df(f"claim {i}", f"m{i}") for i in range(1, 6)])
+    critique1 = cr(
+        [(f"F-ai{i}", "supported", None) for i in range(1, 4)]
+        + [
+            ("F-ai4", "partially_supported", None),
+            ("F-ai5", "partially_supported", None),
+        ]
+    )
+    llm = ScriptedLLM(drafts=[draft1], critiques=[critique1], draft_error_on=2)
+
+    dossier = await _run(llm)
+
+    assert dossier.ok
+    assert len(dossier.findings) == 5  # pass-1 results survive the pass-2 crash
+    assert any("draft extraction failed" in g for g in dossier.gaps)
+    # Work was pending: confidence capped.
+    assert all(f.confidence in ("medium", "low") for f in dossier.findings)

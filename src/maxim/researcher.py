@@ -334,14 +334,19 @@ async def run_researcher(
     while True:
         iterations += 1
         progress(f"extracting findings (pass {iterations})…")
-        draft: DraftDossier = await llm.parse(
-            stage=stage,
-            system=system,
-            messages=transcript + [{"role": "user", "content": draft_instruction}],
-            output_format=DraftDossier,
-            model=settings.researcher_model,
-            effort=preset.researcher_effort,
-        )
+        try:
+            draft: DraftDossier = await llm.parse(
+                stage=stage,
+                system=system,
+                messages=transcript + [{"role": "user", "content": draft_instruction}],
+                output_format=DraftDossier,
+                model=settings.researcher_model,
+                effort=preset.researcher_effort,
+            )
+        except LLMError as exc:
+            stop_notes.append(f"draft extraction failed ({exc}) — keeping partial results")
+            stopped_with_pending_work = True
+            break
         if draft.summary:
             summary = draft.summary
         methods = _merge_unique(methods, draft.methods_identified)
@@ -350,23 +355,29 @@ async def run_researcher(
         survivors, mech_rejected, next_id = _mechanical_gate(
             draft, brief, plan, source_cache, cited_quotes, engagement, next_id
         )
-        rejected.extend(mech_rejected)
 
         new_validated: list[Finding] = []
         critic_rejected: list[RejectedFinding] = []
         if survivors:
             progress(f"critiquing {len(survivors)} findings…")
-            result = await critique(
-                stage=f"critic:{brief.perspective}",
-                brief=current_brief,
-                findings=survivors,
-                source_cache=source_cache,
-                settings=settings,
-                llm=llm,
-            )
+            try:
+                result = await critique(
+                    stage=f"critic:{brief.perspective}",
+                    brief=current_brief,
+                    findings=survivors,
+                    source_cache=source_cache,
+                    settings=settings,
+                    llm=llm,
+                    all_claims=[f.claim for f in frozen + pending_weak + survivors],
+                )
+            except LLMError as exc:
+                # Uncritiqued survivors are discarded — they never passed the
+                # gate — but everything validated so far is kept.
+                stop_notes.append(f"critique failed ({exc}) — keeping partial results")
+                stopped_with_pending_work = True
+                break
             new_validated, critic_rejected = apply_critique(survivors, result)
             coverage_gaps = result.coverage_gaps
-        rejected.extend(critic_rejected)
 
         new_supported = [f for f in new_validated if f.verdict == "supported"]
         new_weak = [f for f in new_validated if f.verdict != "supported"]
@@ -377,9 +388,22 @@ async def run_researcher(
         pending_weak = [f for f in pending_weak if f.method_name.casefold() not in superseded]
         frozen.extend(new_supported)
         pending_weak.extend(new_weak)
-        # A claim that later validated no longer belongs in the rejected list.
-        validated_claims = {_norm_claim(f.claim) for f in frozen + pending_weak}
-        rejected = [r for r in rejected if _norm_claim(r.finding.claim) not in validated_claims]
+
+        # Rejected-list hygiene, time-aware in both directions: an EARLIER
+        # rejection repaired by THIS pass's validation leaves the list, and a
+        # rejection from THIS pass evicts a stale weak twin (the later verdict
+        # wins) — but never a frozen supported finding. Duplicates (same claim
+        # and reason re-rejected across passes) collapse to one entry.
+        newly_validated = {_norm_claim(f.claim) for f in new_validated}
+        rejected = [r for r in rejected if _norm_claim(r.finding.claim) not in newly_validated]
+        rejected_now = {_norm_claim(r.finding.claim) for r in mech_rejected + critic_rejected}
+        pending_weak = [f for f in pending_weak if _norm_claim(f.claim) not in rejected_now]
+        seen = {(_norm_claim(r.finding.claim), r.reason) for r in rejected}
+        for rejection in mech_rejected + critic_rejected:
+            key = (_norm_claim(rejection.finding.claim), rejection.reason)
+            if key not in seen:
+                seen.add(key)
+                rejected.append(rejection)
 
         outcome = IterationOutcome(
             drafted=len(draft.findings),
@@ -458,22 +482,28 @@ async def run_researcher(
             messages = transcript + [{"role": "user", "content": message}]
             tools = [_fetch_tool(settings, REPAIR_FETCH_MAX_USES)]
             max_continuations = REPAIR_MAX_CONTINUATIONS
-        gathered = await llm.run_agentic(
-            stage=stage,
-            system=system,
-            messages=messages,
-            tools=tools,
-            model=settings.researcher_model,
-            effort=preset.researcher_effort,
-            max_tokens=preset.gather_max_tokens,
-            max_continuations=max_continuations,
-            on_progress=progress,
-        )
+        try:
+            gathered = await llm.run_agentic(
+                stage=stage,
+                system=system,
+                messages=messages,
+                tools=tools,
+                model=settings.researcher_model,
+                effort=preset.researcher_effort,
+                max_tokens=preset.gather_max_tokens,
+                max_continuations=max_continuations,
+                on_progress=progress,
+            )
+        except LLMError as exc:
+            stop_notes.append(f"repair search failed ({exc}) — keeping partial results")
+            stopped_with_pending_work = True
+            break
         transcript = gathered.messages
         source_cache.update(gathered.source_cache)
         cited_quotes.extend(gathered.cited_quotes)
         queries_tried.extend(gathered.queries)
         engagement.update(gathered.engagement)
+        truncated_gather = truncated_gather or gathered.truncated
         continuations += gathered.continuations
         draft_instruction = _repair_draft_instruction(frozen) + (
             COMMUNITY_DRAFT_SUFFIX if community else ""
