@@ -47,7 +47,9 @@ respect the brief's `avoid` list.
 How to work:
 1. Search with web_search, then FETCH the promising pages with web_fetch before \
 citing them. Never cite a page you have not fetched or that search results alone \
-surfaced — quotes must come from fetched content.
+surfaced — quotes must come from fetched content. Exception: specialized search \
+tools (paper or community search), when available, return quotable text directly — \
+you may quote that text verbatim, citing the URL shown in the result.
 2. Prefer reputable sources: peer-reviewed papers and arXiv, official documentation, \
 engineering blogs of well-known companies, and widely recognized practitioners. \
 Prefer sources inside the recency horizon given in the brief; older sources are \

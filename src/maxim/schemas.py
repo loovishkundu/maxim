@@ -120,6 +120,16 @@ class DraftDossier(StrictModel):
 SourceTier = Literal["A", "B", "C", "D"]
 
 
+class EngagementStats(StrictModel):
+    """Mechanical engagement metadata from the community search tools —
+    never model-reported. Basis for the community evidence floors."""
+
+    source: Literal["hn", "github", "reddit", "other"]
+    points: int | None = None
+    comments: int | None = None
+    reactions: int | None = None
+
+
 class Evidence(StrictModel):
     quote: str
     source_url: str

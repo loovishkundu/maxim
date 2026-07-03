@@ -45,6 +45,7 @@ from .schemas import (
     ResearchDossier,
     ResearchPlan,
 )
+from .tools import client_tools_for
 from .verification import verify_evidence
 
 # Don't start another repair pass with less than this much wall-clock left —
@@ -68,6 +69,11 @@ def _web_tools(settings: Settings) -> list[dict[str, Any]]:
         },
         _fetch_tool(settings, preset.web_fetch_max_uses),
     ]
+
+
+def _research_tools(settings: Settings, perspective: str) -> list[Any]:
+    """Server web tools + the perspective's client-side specialty tools."""
+    return [*_web_tools(settings), *client_tools_for(perspective)]
 
 
 def _fetch_tool(settings: Settings, max_uses: int) -> dict[str, Any]:
@@ -285,7 +291,7 @@ async def run_researcher(
         stage=stage,
         system=system,
         messages=[{"role": "user", "content": _gather_message(brief, plan)}],
-        tools=_web_tools(settings),
+        tools=_research_tools(settings, brief.perspective),
         model=settings.researcher_model,
         effort=preset.researcher_effort,
         max_tokens=preset.gather_max_tokens,
@@ -429,13 +435,13 @@ async def run_researcher(
                     ),
                 }
             ]
-            tools = _web_tools(settings)
+            tools = _research_tools(settings, brief.perspective)
             max_continuations = preset.max_continuations
         elif decision.action == "retry":
             progress("retrying weak claims with critic hints…")
             message = _retry_message(pending_weak, critic_rejected, coverage_gaps)
             messages = transcript + [{"role": "user", "content": message}]
-            tools = _web_tools(settings)
+            tools = _research_tools(settings, brief.perspective)
             max_continuations = preset.max_continuations
         else:  # revalidate
             progress("re-fetching sources to repair broken quotes…")

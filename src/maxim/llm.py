@@ -46,6 +46,34 @@ class CitedQuote:
 
 
 @dataclass
+class ToolOutcome:
+    """What a client-side tool hands back.
+
+    `sources` land in the SourceCache so quotes taken from tool results stay
+    mechanically verifiable; `engagement` maps url → stats for the community
+    researcher's mechanical floors.
+    """
+
+    content: str
+    sources: list[SourceDoc] = field(default_factory=list)
+    engagement: dict[str, Any] = field(default_factory=dict)
+    error: bool = False
+
+
+@dataclass
+class ClientTool:
+    """A locally-executed tool: API spec + async handler + hard use cap."""
+
+    spec: dict[str, Any]  # {"name", "description", "input_schema"}
+    handler: Callable[[dict[str, Any]], Any]  # async (input) -> ToolOutcome
+    max_uses: int = 5
+
+    @property
+    def name(self) -> str:
+        return str(self.spec["name"])
+
+
+@dataclass
 class AgenticResult:
     messages: list[dict[str, Any]]
     final_stop_reason: str | None
@@ -54,6 +82,7 @@ class AgenticResult:
     continuations: int
     truncated: bool  # gather ended early: continuation cap, max_tokens, or budget
     queries: list[str] = field(default_factory=list)  # web_search queries issued
+    engagement: dict[str, Any] = field(default_factory=dict)  # url → stats from tools
 
 
 @dataclass
@@ -240,24 +269,38 @@ class LLM:
         stage: str,
         system: str,
         messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
+        tools: list[dict[str, Any] | ClientTool],
         model: str,
         effort: str,
         max_tokens: int,
         max_continuations: int,
         on_progress: Callable[[str], None] | None = None,
     ) -> AgenticResult:
-        """Streamed agentic turn with server tools; resumes on pause_turn.
+        """Streamed agentic turn with server and client tools.
 
-        Returns the full transcript (for a follow-up parse call on the same
-        conversation) plus everything harvested for verification. The
-        transcript is always left in a replayable state: on an early stop the
-        trailing unresolved tool_use blocks are stripped.
+        Resumes on pause_turn; executes ClientTool calls locally and feeds the
+        results (and their sources) back. Tool rounds and pause_turn resumes
+        share one continuation budget so total turns stay bounded. Returns the
+        full transcript (for a follow-up parse call on the same conversation)
+        plus everything harvested for verification. The transcript is always
+        left in a replayable state: on an early stop the trailing unresolved
+        tool_use blocks are stripped.
         """
+        api_tools: list[dict[str, Any]] = []
+        handlers: dict[str, ClientTool] = {}
+        for tool in tools:
+            if isinstance(tool, ClientTool):
+                api_tools.append(tool.spec)
+                handlers[tool.name] = tool
+            else:
+                api_tools.append(tool)
+        uses: dict[str, int] = dict.fromkeys(handlers, 0)
+
         transcript = list(messages)
         source_cache: dict[str, SourceDoc] = {}
         cited_quotes: list[CitedQuote] = []
         queries: list[str] = []
+        engagement: dict[str, Any] = {}
         continuations = 0
         stop_reason: str | None = None
         truncated = False
@@ -269,7 +312,7 @@ class LLM:
                     max_tokens=max_tokens,
                     system=_system_blocks(system),
                     messages=transcript,
-                    tools=tools,
+                    tools=api_tools,
                     thinking=THINKING,
                     output_config={"effort": effort},
                 ) as stream:
@@ -293,10 +336,24 @@ class LLM:
                 transcript = transcript + [{"role": "assistant", "content": final.content}]
                 continuations += 1
                 continue
+            if stop_reason == "tool_use" and handlers:
+                results = await self._run_client_tools(
+                    final.content, handlers, uses, source_cache, engagement
+                )
+                if results and continuations < max_continuations and not self.ledger.over_budget:
+                    transcript = transcript + [
+                        {"role": "assistant", "content": final.content},
+                        {"role": "user", "content": results},
+                    ]
+                    continuations += 1
+                    continue
+                # Out of budget mid-tool-call: fall through to the early-stop
+                # cleanup below rather than leaving unresolved tool_use blocks.
             # Terminal: either a clean end_turn, or an early stop (continuation
-            # cap / budget while paused / max_tokens). Early stops can leave a
-            # dangling tool_use that would poison the follow-up parse call.
-            truncated = stop_reason in ("pause_turn", "max_tokens")
+            # cap / budget while paused / max_tokens / unresolvable tool_use).
+            # Early stops can leave a dangling tool_use that would poison the
+            # follow-up parse call.
+            truncated = stop_reason in ("pause_turn", "max_tokens", "tool_use")
             content = strip_dangling_tool_use(final.content) if truncated else final.content
             if content:
                 transcript = transcript + [{"role": "assistant", "content": content}]
@@ -310,7 +367,46 @@ class LLM:
             continuations=continuations,
             truncated=truncated,
             queries=queries,
+            engagement=engagement,
         )
+
+    async def _run_client_tools(
+        self,
+        content: list[Any],
+        handlers: dict[str, ClientTool],
+        uses: dict[str, int],
+        source_cache: dict[str, SourceDoc],
+        engagement: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        """Execute client tool_use blocks; never raises — a broken tool
+        degrades to an is_error result the model can route around."""
+        results: list[dict[str, Any]] = []
+        for block in content:
+            if getattr(block, "type", None) != "tool_use":
+                continue
+            tool = handlers.get(getattr(block, "name", ""))
+            entry: dict[str, Any] = {"type": "tool_result", "tool_use_id": block.id}
+            if tool is None:
+                entry.update(content=f"unknown tool {block.name!r}", is_error=True)
+            elif uses[tool.name] >= tool.max_uses:
+                entry.update(
+                    content="tool use budget exhausted — work with what you have",
+                    is_error=True,
+                )
+            else:
+                uses[tool.name] += 1
+                try:
+                    outcome: ToolOutcome = await tool.handler(dict(block.input or {}))
+                except Exception as exc:  # degrade, never crash the researcher
+                    outcome = ToolOutcome(content=f"tool failed: {exc}", error=True)
+                for doc in outcome.sources:
+                    source_cache[doc.url] = doc
+                engagement.update(outcome.engagement)
+                entry["content"] = outcome.content
+                if outcome.error:
+                    entry["is_error"] = True
+            results.append(entry)
+        return results
 
     # ----------------------------------------------------------------- stream
 

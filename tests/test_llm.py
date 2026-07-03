@@ -1,6 +1,16 @@
 from types import SimpleNamespace as NS
 
-from maxim.llm import CitedQuote, SourceDoc, harvest_blocks, strip_dangling_tool_use
+from maxim.config import Settings
+from maxim.llm import (
+    LLM,
+    CitedQuote,
+    ClientTool,
+    SourceDoc,
+    ToolOutcome,
+    harvest_blocks,
+    strip_dangling_tool_use,
+)
+from maxim.usage import UsageLedger
 
 
 def _fetch_result(url: str, text: str) -> NS:
@@ -74,3 +84,191 @@ class TestStripDangling:
 
     def test_empty_content(self):
         assert strip_dangling_tool_use([]) == []
+
+
+def _usage():
+    return NS(
+        input_tokens=10,
+        output_tokens=5,
+        cache_read_input_tokens=0,
+        cache_creation_input_tokens=0,
+        server_tool_use=None,
+    )
+
+
+def _message(content, stop_reason):
+    return NS(content=content, stop_reason=stop_reason, usage=_usage())
+
+
+class FakeStream:
+    def __init__(self, message):
+        self._message = message
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get_final_message(self):
+        return self._message
+
+
+class FakeAnthropicClient:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.calls: list[dict] = []
+        self.messages = self
+
+    def stream(self, **kwargs):
+        self.calls.append(kwargs)
+        return FakeStream(self._responses.pop(0))
+
+
+def _tool_use(tid, name, tool_input):
+    return NS(type="tool_use", id=tid, name=name, input=tool_input)
+
+
+def _llm(responses):
+    return LLM(
+        settings=Settings(),
+        ledger=UsageLedger(budget_usd=10.0),
+        client=FakeAnthropicClient(responses),
+    )
+
+
+def _client_tool(handler, max_uses=5, name="hn_search"):
+    return ClientTool(
+        spec={"name": name, "description": "d", "input_schema": {"type": "object"}},
+        handler=handler,
+        max_uses=max_uses,
+    )
+
+
+class TestClientToolLoop:
+    async def test_tool_round_trip(self):
+        async def handler(tool_input):
+            assert tool_input == {"query": "stl"}
+            return ToolOutcome(
+                content="TOOL RESULT TEXT",
+                sources=[SourceDoc(url="https://x.test/1", text="cached body")],
+                engagement={"https://x.test/1": {"points": 42}},
+            )
+
+        llm = _llm(
+            [
+                _message([_tool_use("tu1", "hn_search", {"query": "stl"})], "tool_use"),
+                _message([NS(type="text", text="done", citations=None)], "end_turn"),
+            ]
+        )
+        result = await llm.run_agentic(
+            stage="researcher:community",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[_client_tool(handler)],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=6,
+        )
+
+        # The tool result was fed back on the same conversation.
+        second_call = llm.client.calls[1]
+        tool_result_msg = second_call["messages"][-1]
+        assert tool_result_msg["role"] == "user"
+        assert tool_result_msg["content"][0]["tool_use_id"] == "tu1"
+        assert tool_result_msg["content"][0]["content"] == "TOOL RESULT TEXT"
+        # Only the API spec (not the ClientTool wrapper) went to the API.
+        assert second_call["tools"] == [_client_tool(handler).spec]
+        # Sources and engagement were harvested for verification.
+        assert result.source_cache["https://x.test/1"].text == "cached body"
+        assert result.engagement["https://x.test/1"] == {"points": 42}
+        assert result.continuations == 1
+        assert not result.truncated
+
+    async def test_tool_budget_enforced_mechanically(self):
+        calls = []
+
+        async def handler(tool_input):
+            calls.append(tool_input)
+            return ToolOutcome(content="ok")
+
+        llm = _llm(
+            [
+                _message([_tool_use("tu1", "hn_search", {"query": "a"})], "tool_use"),
+                _message([_tool_use("tu2", "hn_search", {"query": "b"})], "tool_use"),
+                _message([NS(type="text", text="done", citations=None)], "end_turn"),
+            ]
+        )
+        await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[_client_tool(handler, max_uses=1)],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=6,
+        )
+        assert len(calls) == 1  # second call blocked by the cap, not executed
+        third_call = llm.client.calls[2]
+        blocked = third_call["messages"][-1]["content"][0]
+        assert blocked["is_error"] is True
+        assert "budget exhausted" in blocked["content"]
+
+    async def test_tool_exception_degrades_to_error_result(self):
+        async def handler(tool_input):
+            raise RuntimeError("api down")
+
+        llm = _llm(
+            [
+                _message([_tool_use("tu1", "hn_search", {"query": "a"})], "tool_use"),
+                _message([NS(type="text", text="done", citations=None)], "end_turn"),
+            ]
+        )
+        result = await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[_client_tool(handler)],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=6,
+        )
+        error_result = llm.client.calls[1]["messages"][-1]["content"][0]
+        assert error_result["is_error"] is True
+        assert "api down" in error_result["content"]
+        assert result.final_stop_reason == "end_turn"
+
+    async def test_tool_use_at_continuation_cap_strips_dangling(self):
+        async def handler(tool_input):
+            return ToolOutcome(content="ok")
+
+        llm = _llm(
+            [
+                _message(
+                    [
+                        NS(type="text", text="thinking", citations=None),
+                        _tool_use("tu1", "hn_search", {"query": "a"}),
+                    ],
+                    "tool_use",
+                ),
+            ]
+        )
+        result = await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[_client_tool(handler)],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=0,
+        )
+        # Cap hit mid-tool-call: transcript must stay replayable (no dangling
+        # tool_use) and the gather is marked truncated.
+        assert result.truncated
+        last = result.messages[-1]
+        assert last["role"] == "assistant"
+        assert [getattr(b, "type", None) for b in last["content"]] == ["text"]
