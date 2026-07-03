@@ -163,6 +163,13 @@ class CritiqueResult(StrictModel):
     coverage_gaps: list[str]
 
 
+class CoverageResult(StrictModel):
+    """Output of the dedicated coverage pass (batched critics only see slices,
+    so coverage is judged once against the full claim list)."""
+
+    coverage_gaps: list[str]
+
+
 # ------------------------------------------------------------------------ dossier
 
 

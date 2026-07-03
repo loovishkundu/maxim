@@ -175,6 +175,13 @@ you more skeptical, not less.
 source could rescue the claim.
 5. Fill coverage_gaps with sub-questions from the brief that no finding addresses."""
 
+COVERAGE_SYSTEM = """\
+You are the coverage checker inside Maxim. You receive a research brief's sub-questions \
+and the full list of claims a researcher produced. List in coverage_gaps every \
+sub-question that no claim meaningfully addresses. Be strict about substance (a claim \
+must actually answer the sub-question, not merely mention its topic) but do not invent \
+gaps beyond the given sub-questions. If everything is covered, return an empty list."""
+
 SYNTHESIZER_SYSTEM = """\
 You are the synthesis stage of Maxim. You receive validated research findings from \
 multiple perspective agents and write the final report a busy engineer will actually \

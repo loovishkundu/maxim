@@ -12,6 +12,7 @@ from maxim.config import Settings
 from maxim.llm import AgenticResult, LLMError, SourceDoc, StreamResult
 from maxim.schemas import (
     ClaimVerdict,
+    CoverageResult,
     CritiqueResult,
     DraftDossier,
     ResearchPlan,
@@ -59,8 +60,10 @@ class FakeLLM:
                     ClaimVerdict(finding_id=fid, verdict="supported", fix_hint=None)
                     for fid in ("F-ai1", "F-ai2", "F-ai3", "F-st1", "F-st2", "F-st3")
                 ],
-                coverage_gaps=["maturity question unanswered"],
+                coverage_gaps=[],
             )
+        if output_format is CoverageResult:
+            return CoverageResult(coverage_gaps=["maturity question unanswered"])
         raise AssertionError(f"unexpected output_format {output_format}")
 
     async def run_agentic(

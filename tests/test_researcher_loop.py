@@ -15,6 +15,7 @@ from maxim.llm import AgenticResult, LLMError, SourceDoc
 from maxim.researcher import run_researcher
 from maxim.schemas import (
     ClaimVerdict,
+    CoverageResult,
     CritiqueResult,
     DraftDossier,
     DraftEvidence,
@@ -78,6 +79,7 @@ class ScriptedLLM:
         self.ledger = UsageLedger(budget_usd=budget_usd)
         self.agentic_calls: list[dict] = []
         self.parse_calls: list[dict] = []
+        self._last_critique: CritiqueResult | None = None
 
     async def parse(self, *, stage, system, messages, output_format, model, effort, **_):
         self.parse_calls.append(
@@ -86,7 +88,13 @@ class ScriptedLLM:
         if output_format is DraftDossier:
             return self.drafts.pop(0)
         if output_format is CritiqueResult:
-            return self.critiques.pop(0)
+            self._last_critique = self.critiques.pop(0)
+            return self._last_critique
+        if output_format is CoverageResult:
+            # The scripted CritiqueResult carries the intended gaps; the real
+            # critique() sources them from this separate coverage pass.
+            gaps = self._last_critique.coverage_gaps if self._last_critique else []
+            return CoverageResult(coverage_gaps=gaps)
         if output_format is ResearchBrief:
             if self.replan_raises:
                 raise LLMError("replanner: API call failed: 529")
@@ -170,7 +178,8 @@ async def test_retry_loop_repairs_weak_findings():
     assert "find the benchmark numbers" in retry_msg
     assert "claim 4" in retry_msg
     # And the repair draft locks the already-validated claims.
-    repair_draft_msg = llm.parse_calls[-2]["messages"][-1]["content"]
+    draft_calls = [c for c in llm.parse_calls if c["output_format"] is DraftDossier]
+    repair_draft_msg = draft_calls[-1]["messages"][-1]["content"]
     assert "do not repeat" in repair_draft_msg.casefold()
     assert "claim 1" in repair_draft_msg
 

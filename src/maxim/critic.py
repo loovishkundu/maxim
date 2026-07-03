@@ -4,15 +4,26 @@ The critic never sees the researcher's conversation — only each claim, its
 quotes, and an excerpt of the actual cached source text around the quote. That
 isolation is deliberate: a critic reading the researcher's narrative gets
 seduced by it.
+
+Verdicts are judged in haiku batches (cheap where the volume is). High-stakes
+outcomes — contradicted, source_unreliable, or an unsupported verdict against
+mechanically verified evidence (the judge disagreeing with the quote matcher)
+— are re-arbitrated one-by-one on the escalation model. Coverage gaps are
+judged once against the full claim list, since a batch only sees its slice.
 """
 
 from __future__ import annotations
 
+import json
+from collections.abc import Iterator
+
 from .config import Settings
 from .llm import LLM, SourceDoc, dump_for_prompt
-from .prompts import CRITIC_SYSTEM
+from .prompts import COVERAGE_SYSTEM, CRITIC_SYSTEM
 from .schemas import (
+    ClaimVerdict,
     Confidence,
+    CoverageResult,
     CritiqueResult,
     Finding,
     RejectedFinding,
@@ -22,6 +33,16 @@ from .schemas import (
 from .verification import excerpt_around
 
 _UNAVAILABLE = "[source text unavailable — not mechanically verified]"
+
+_BATCH_COVERAGE_NOTE = (
+    "\n\nReturn coverage_gaps as an empty list — coverage is judged in a separate pass."
+)
+
+_ESCALATION_NOTE = (
+    "\n\nA first-pass reviewer returned the verdict {verdict!r} for this finding. "
+    "You are the arbitrating reviewer: judge it independently and strictly on the "
+    "evidence shown; do not defer to the first verdict."
+)
 
 
 def build_payload(
@@ -52,6 +73,19 @@ def build_payload(
     return "\n".join(lines)
 
 
+def _batches(findings: list[Finding], size: int) -> Iterator[list[Finding]]:
+    for start in range(0, len(findings), max(size, 1)):
+        yield findings[start : start + max(size, 1)]
+
+
+def _needs_escalation(verdict: Verdict, finding: Finding) -> bool:
+    if verdict in ("contradicted", "source_unreliable"):
+        return True
+    # Split signal: the judge rejects a claim whose quote mechanically matched
+    # its source — one of them is wrong, and rejection is irreversible.
+    return verdict == "unsupported" and any(ev.status == "verified" for ev in finding.evidence)
+
+
 async def critique(
     *,
     stage: str,
@@ -61,15 +95,58 @@ async def critique(
     settings: Settings,
     llm: LLM,
 ) -> CritiqueResult:
-    payload = build_payload(brief, findings, source_cache)
-    return await llm.parse(
+    verdicts: dict[str, ClaimVerdict] = {}
+    for batch in _batches(findings, settings.critic_batch_size):
+        payload = build_payload(brief, batch, source_cache) + _BATCH_COVERAGE_NOTE
+        result = await llm.parse(
+            stage=stage,
+            system=CRITIC_SYSTEM,
+            messages=[{"role": "user", "content": payload}],
+            output_format=CritiqueResult,
+            model=settings.critic_model,
+            effort=settings.critic_effort,
+        )
+        for v in result.verdicts:
+            verdicts[_normalize_id(v.finding_id)] = v
+
+    by_id = {_normalize_id(f.id): f for f in findings}
+    for norm_id, claim_verdict in list(verdicts.items()):
+        finding = by_id.get(norm_id)
+        if finding is None or not _needs_escalation(claim_verdict.verdict, finding):
+            continue
+        payload = build_payload(brief, [finding], source_cache) + _ESCALATION_NOTE.format(
+            verdict=claim_verdict.verdict
+        )
+        arbitration = await llm.parse(
+            stage=stage,
+            system=CRITIC_SYSTEM,
+            messages=[{"role": "user", "content": payload}],
+            output_format=CritiqueResult,
+            model=settings.critic_escalation_model,
+            effort=settings.critic_escalation_effort,
+        )
+        for v in arbitration.verdicts:
+            if _normalize_id(v.finding_id) == norm_id:
+                verdicts[norm_id] = v
+
+    coverage_payload = "\n".join(
+        [
+            "Research brief sub-questions:",
+            json.dumps(brief.sub_questions),
+            "",
+            "Claims produced:",
+            *(f"- {f.claim}" for f in findings),
+        ]
+    )
+    coverage: CoverageResult = await llm.parse(
         stage=stage,
-        system=CRITIC_SYSTEM,
-        messages=[{"role": "user", "content": payload}],
-        output_format=CritiqueResult,
+        system=COVERAGE_SYSTEM,
+        messages=[{"role": "user", "content": coverage_payload}],
+        output_format=CoverageResult,
         model=settings.critic_model,
         effort=settings.critic_effort,
     )
+    return CritiqueResult(verdicts=list(verdicts.values()), coverage_gaps=coverage.coverage_gaps)
 
 
 def _stamp_confidence(finding: Finding, verdict: Verdict) -> Confidence:

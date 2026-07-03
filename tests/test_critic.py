@@ -1,8 +1,11 @@
+import re
+
 from conftest import make_brief, make_finding
 
-from maxim.critic import apply_critique, build_payload
+from maxim.config import Settings
+from maxim.critic import apply_critique, build_payload, critique
 from maxim.llm import SourceDoc
-from maxim.schemas import ClaimVerdict, CritiqueResult
+from maxim.schemas import ClaimVerdict, CoverageResult, CritiqueResult
 
 
 def test_apply_critique_splits_and_stamps():
@@ -91,3 +94,100 @@ def test_payload_marks_unverified_context():
     )
     assert "F-ai1" in payload
     assert "source text unavailable" in payload or "NOT found verbatim" in payload
+
+
+class RecordingLLM:
+    """Records every parse call; scripts verdicts per model tier."""
+
+    def __init__(self, batch_verdict="supported", arbitration_verdict="supported", gaps=None):
+        self.batch_verdict = batch_verdict
+        self.arbitration_verdict = arbitration_verdict
+        self.gaps = gaps or []
+        self.calls: list[dict] = []
+
+    async def parse(self, *, stage, system, messages, output_format, model, effort, **_):
+        content = messages[0]["content"]
+        self.calls.append(
+            {"model": model, "effort": effort, "format": output_format, "content": content}
+        )
+        if output_format is CoverageResult:
+            return CoverageResult(coverage_gaps=self.gaps)
+        ids = re.findall(r"### (F-\w+)", content)
+        verdict = (
+            self.arbitration_verdict if "arbitrating reviewer" in content else self.batch_verdict
+        )
+        return CritiqueResult(
+            verdicts=[ClaimVerdict(finding_id=i, verdict=verdict, fix_hint=None) for i in ids],
+            coverage_gaps=[],
+        )
+
+
+def _many_findings(n):
+    return [make_finding(f"F-ai{i}", status="verified") for i in range(1, n + 1)]
+
+
+async def test_critique_batches_and_runs_coverage_once():
+    llm = RecordingLLM(gaps=["gap 1"])
+    result = await critique(
+        stage="critic:ai_agentic",
+        brief=make_brief(),
+        findings=_many_findings(20),
+        source_cache={},
+        settings=Settings(),
+        llm=llm,
+    )
+    batch_calls = [c for c in llm.calls if c["format"] is CritiqueResult]
+    coverage_calls = [c for c in llm.calls if c["format"] is CoverageResult]
+    assert len(batch_calls) == 3  # 8 + 8 + 4
+    assert len(coverage_calls) == 1
+    assert all(c["model"] == "claude-haiku-4-5" for c in batch_calls)
+    assert len(result.verdicts) == 20
+    assert result.coverage_gaps == ["gap 1"]
+    # Batch payloads must not double-report coverage.
+    assert all("separate pass" in c["content"] for c in batch_calls)
+
+
+async def test_contradicted_verdict_escalates_and_arbitration_wins():
+    llm = RecordingLLM(batch_verdict="contradicted", arbitration_verdict="supported")
+    result = await critique(
+        stage="critic:ai_agentic",
+        brief=make_brief(),
+        findings=_many_findings(2),
+        source_cache={},
+        settings=Settings(),
+        llm=llm,
+    )
+    escalations = [c for c in llm.calls if "arbitrating reviewer" in c["content"]]
+    assert len(escalations) == 2  # one per contradicted finding, one-by-one
+    assert all(c["model"] == "claude-opus-4-8" for c in escalations)
+    assert all(c["effort"] == "low" for c in escalations)
+    assert {v.verdict for v in result.verdicts} == {"supported"}
+
+
+async def test_unsupported_on_verified_evidence_escalates():
+    # The judge rejecting a mechanically verified quote is a split signal.
+    llm = RecordingLLM(batch_verdict="unsupported", arbitration_verdict="unsupported")
+    await critique(
+        stage="critic:ai_agentic",
+        brief=make_brief(),
+        findings=[make_finding("F-ai1", status="verified")],
+        source_cache={},
+        settings=Settings(),
+        llm=llm,
+    )
+    assert any("arbitrating reviewer" in c["content"] for c in llm.calls)
+
+
+async def test_unsupported_on_skipped_evidence_does_not_escalate():
+    llm = RecordingLLM(batch_verdict="unsupported")
+    await critique(
+        stage="critic:ai_agentic",
+        brief=make_brief(),
+        findings=[make_finding("F-ai1", status="skipped")],
+        source_cache={},
+        settings=Settings(),
+        llm=llm,
+    )
+    assert not any("arbitrating reviewer" in c["content"] for c in llm.calls)
+    # No opus involved anywhere: everything stayed on the batch model.
+    assert all(c["model"] == "claude-haiku-4-5" for c in llm.calls)
