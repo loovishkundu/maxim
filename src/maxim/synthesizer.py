@@ -2,7 +2,8 @@
 
 Generated as streamed prose (structure enforced by the system prompt template),
 constrained by the citation contract: the synthesizer may only cite finding
-ids; report.py resolves them and flags anything unknown.
+ids; report.py resolves them and flags anything unknown, and quality.py gates
+the draft (uncited paragraphs, missing sections) with one repair pass.
 """
 
 from __future__ import annotations
@@ -13,6 +14,7 @@ from collections.abc import Callable
 from .config import Settings
 from .llm import LLM, StreamResult
 from .prompts import SYNTHESIZER_SYSTEM
+from .quality import repair_instruction
 from .schemas import PERSPECTIVE_LABELS, MethodPulse, ResearchDossier, ResearchPlan
 
 
@@ -114,4 +116,33 @@ async def synthesize(
         effort=settings.synthesizer_effort,
         max_tokens=settings.preset.synthesis_max_tokens,
         on_text=on_text,
+    )
+
+
+async def repair_synthesis(
+    plan: ResearchPlan,
+    dossiers: list[ResearchDossier],
+    settings: Settings,
+    llm: LLM,
+    draft_text: str,
+    violations: list[str],
+    canonical_methods: list[str] | None = None,
+    pulse: list[MethodPulse] | None = None,
+) -> StreamResult:
+    """One rewrite pass on the same conversation, told exactly what broke."""
+    messages = [
+        {
+            "role": "user",
+            "content": build_synthesis_input(plan, dossiers, canonical_methods, pulse),
+        },
+        {"role": "assistant", "content": draft_text},
+        {"role": "user", "content": repair_instruction(violations)},
+    ]
+    return await llm.stream_text(
+        stage="synthesizer",
+        system=SYNTHESIZER_SYSTEM,
+        messages=messages,
+        model=settings.synthesizer_model,
+        effort=settings.synthesizer_effort,
+        max_tokens=settings.preset.synthesis_max_tokens,
     )

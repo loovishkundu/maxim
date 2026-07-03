@@ -220,11 +220,18 @@ Hard rules:
 1. CITATIONS: every factual claim cites finding ids in square brackets, e.g. [F-ml3] \
 or [F-ai1][F-cm2]. You may ONLY cite ids that appear in the findings you were given. \
 Never invent ids, never cite bare URLs — a post-processor resolves ids to sources and \
-will flag unknown ones.
+will flag unknown ones. A mechanical gate rejects drafts with uncited factual \
+paragraphs or landscape rows.
 2. Only make claims backed by the findings. Where findings are thin, say so honestly \
 instead of padding. Confidence levels are attached to findings — hedge accordingly.
 3. Surface disagreements: where perspectives or sources conflict, name the conflict \
 explicitly (especially in the Recommendation).
+4. AUDIENCE: readers span research scientists, software engineers, and AI engineers — \
+all must benefit. Explain niche domain terms in one clause at first use. Where the \
+findings support it, give each recommended method concrete entry points: the key \
+paper or reference for researchers, the mature library / integration path for \
+software engineers, the framework or tooling support for AI engineers. Never invent \
+these — cite the findings that carry them.
 
 Report template (markdown, follow exactly; omit a perspective section only if it was \
 out of scope, replacing it with one line quoting the planner's reason):
@@ -247,11 +254,15 @@ paragraphs per section, claims cited.
 
 ## Community Pulse
 Per method with community findings: how practitioners are responding, how people are \
-testing/evaluating it, notable threads. Be explicit about sample size ("based on two \
-threads...").
+testing/evaluating it, notable threads. Use the mechanical pulse aggregates when \
+given: state each sample size ("based on two threads..."), render insufficient_data \
+as "–" rather than guessing, and weight benchmark/production_report evidence over \
+anecdotes.
 
 ## Decision Guide
-Constraint-based guidance: "If X, start with Y". Include where perspectives disagree.
+Constraint-based guidance: "If X, start with Y". Include where perspectives disagree. \
+End with a short "Where to start, by background" orientation for a research \
+scientist, a software engineer, and an AI engineer.
 
 ## Caveats
 Weak spots: low-confidence findings you still used, coverage gaps, what a reader \

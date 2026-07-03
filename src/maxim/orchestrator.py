@@ -20,6 +20,7 @@ from .config import Settings
 from .llm import LLM, LLMError
 from .methods import apply_canonical_names, canonical_names, canonicalize_methods
 from .planner import make_plan
+from .quality import report_violations
 from .report import assemble_report, fallback_report
 from .researcher import run_researcher, stub_dossier
 from .schemas import (
@@ -31,7 +32,7 @@ from .schemas import (
     RunResult,
 )
 from .sentiment import build_pulse
-from .synthesizer import synthesize
+from .synthesizer import repair_synthesis, synthesize
 from .usage import UsageLedger
 
 ProgressFn = Callable[[str, str], None]
@@ -148,6 +149,7 @@ async def run_pipeline(
 
         any_findings = any(d.findings for d in dossiers)
         synthesis_failed = False
+        quality_failed = False
         fallback_reason: str | None = None
         if not any_findings:
             fallback_reason = "no validated findings from any researcher"
@@ -178,10 +180,41 @@ async def run_pipeline(
                         "synthesis hit its token cap — the report body is truncated; "
                         "re-run with a deeper preset or fewer perspectives"
                     )
+                body = synthesis.text
+                # Rigid quality gate: the reader must not meet uncited or
+                # template-breaking output. One repair pass, then disclose.
+                known_ids = {f.id for d in dossiers for f in d.findings}
+                violations = report_violations(body, known_ids)
+                if violations and not synthesis.truncated and not ledger.over_budget:
+                    progress(
+                        "synthesizer",
+                        f"quality gate: {len(violations)} violation(s) — repairing…",
+                    )
+                    try:
+                        repaired = await repair_synthesis(
+                            plan,
+                            dossiers,
+                            settings,
+                            llm,
+                            draft_text=body,
+                            violations=violations,
+                            canonical_methods=canonical,
+                            pulse=pulse,
+                        )
+                    except LLMError as exc:
+                        warnings.append(f"report repair pass failed: {exc}")
+                    else:
+                        repaired_violations = report_violations(repaired.text, known_ids)
+                        if len(repaired_violations) < len(violations):
+                            body = repaired.text
+                            violations = repaired_violations
+                if violations:
+                    quality_failed = True
+                    warnings.append("report quality gate: " + "; ".join(violations))
                 report_md = assemble_report(
                     plan,
                     dossiers,
-                    synthesis.text,
+                    body,
                     ledger.to_run_usage(),
                     warnings,
                     settings.depth,
@@ -202,6 +235,7 @@ async def run_pipeline(
             ledger.over_budget
             or not any_findings
             or synthesis_failed
+            or quality_failed
             or any(not d.ok for d in dossiers)
         )
         return RunResult(

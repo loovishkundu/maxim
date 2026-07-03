@@ -21,6 +21,23 @@ from maxim.schemas import (
 )
 from maxim.usage import UsageLedger
 
+GOOD_SYNTH = """# Report
+
+## TL;DR
+- STL is solid [F-ai1]
+
+## Method Landscape
+| Method | Perspective | Maturity | Community Signal | Best When | Findings |
+|---|---|---|---|---|---|
+| STL decomposition | Statistics | mature | – | seasonal data | [F-st1] |
+
+## Decision Guide
+Start with STL [F-st1].
+
+## Caveats
+Coverage gaps remain [F-ai1].
+"""
+
 
 class FakeLLM:
     def __init__(
@@ -30,6 +47,7 @@ class FakeLLM:
         fail_perspectives=frozenset(),
         synth_stop_reason="end_turn",
         synth_raises=False,
+        synth_texts=None,
         perspectives=("ai_agentic", "statistics"),
     ):
         self.settings = settings
@@ -37,6 +55,8 @@ class FakeLLM:
         self.fail_perspectives = fail_perspectives
         self.synth_stop_reason = synth_stop_reason
         self.synth_raises = synth_raises
+        self.synth_texts = list(synth_texts) if synth_texts else [GOOD_SYNTH]
+        self.synth_calls = 0
         self.perspectives = perspectives
         self.draft_calls: dict[str, int] = {}
         self.agentic_stages: list[str] = []
@@ -114,10 +134,9 @@ class FakeLLM:
     ):
         if self.synth_raises:
             raise LLMError("synthesizer: API call failed: 529 overloaded")
-        return StreamResult(
-            text="# Report\n\nSTL is solid [F-ai1] and stats agree [F-st1]. Bogus [F-xx7].",
-            stop_reason=self.synth_stop_reason,
-        )
+        self.synth_calls += 1
+        text = self.synth_texts.pop(0) if len(self.synth_texts) > 1 else self.synth_texts[0]
+        return StreamResult(text=text, stop_reason=self.synth_stop_reason)
 
 
 def _settings(**kwargs) -> Settings:
@@ -163,7 +182,6 @@ async def test_happy_path(monkeypatch):
         assert dossier.loop_actions == ["revalidate"]
 
     assert "[F-ai1]" in result.report_markdown
-    assert "[F-xx7 — unresolved citation]" in result.report_markdown
     assert "## Sources" in result.report_markdown
     assert "## Appendix: Rejected Claims" in result.report_markdown
     assert not result.partial
@@ -297,3 +315,35 @@ async def test_two_wave_community_seeded_with_canonical_methods(monkeypatch):
     # honesty demands insufficient_data — never an invented verdict.
     assert result.pulse
     assert all(p.sentiment == "insufficient_data" for p in result.pulse)
+
+
+BAD_SYNTH = "# Report\n\nSTL is solid [F-ai1] and stats agree [F-st1]. Bogus [F-xx7]."
+
+
+async def test_quality_gate_repairs_bad_draft(monkeypatch):
+    holder = _install(monkeypatch, synth_texts=[BAD_SYNTH, GOOD_SYNTH])
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert holder["llm"].synth_calls == 2  # draft + one repair pass
+    assert not result.partial
+    assert "## TL;DR" in result.report_markdown
+    assert "[F-xx7" not in result.report_markdown
+
+
+async def test_quality_gate_discloses_unrepaired_violations(monkeypatch):
+    holder = _install(monkeypatch, synth_texts=[BAD_SYNTH, BAD_SYNTH])
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert holder["llm"].synth_calls == 2  # exactly one repair attempt, no loop
+    assert result.partial
+    assert any("report quality gate" in w for w in result.warnings)
+    # The bad citation is still annotated for the reader, never silently kept.
+    assert "[F-xx7 — unresolved citation]" in result.report_markdown
