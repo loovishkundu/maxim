@@ -29,6 +29,14 @@ network or API key needed.
 
 ## Environment quirk
 
-This repo lives on an iCloud-synced Desktop. If `import maxim` suddenly fails
-with ModuleNotFoundError, iCloud has set macOS hidden flags inside `.venv`
-(Python 3.12 skips hidden `.pth` files): run `chflags -R nohidden .venv`.
+This repo lives on an iCloud-synced Desktop, and iCloud sets macOS hidden
+flags inside synced dirs — Python 3.12 silently skips hidden `.pth` files,
+breaking the editable install. The venv therefore lives in `.venv.nosync`
+(iCloud ignores `.nosync` names) with `.venv` as a symlink to it. If the
+symlink is ever lost, recreate with:
+
+```bash
+UV_PROJECT_ENVIRONMENT=.venv.nosync uv sync && ln -s .venv.nosync .venv
+```
+
+Fallback if imports still break: `chflags -R nohidden .venv.nosync`.

@@ -9,7 +9,10 @@ wheels/
 *.egg
 
 # --- Virtual environments ---
+# .venv is a symlink to .venv.nosync (iCloud skips .nosync dirs; it otherwise
+# sets hidden flags inside the venv, which makes Python 3.12 skip .pth files)
 .venv
+.venv.nosync/
 venv/
 env/
 
