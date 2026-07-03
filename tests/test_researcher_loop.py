@@ -11,7 +11,7 @@ import time
 from conftest import GOOD_QUOTE, PAGE_TEXT, SOURCE_URL, make_brief, make_plan
 
 from maxim.config import Settings
-from maxim.llm import AgenticResult, SourceDoc
+from maxim.llm import AgenticResult, LLMError, SourceDoc
 from maxim.researcher import run_researcher
 from maxim.schemas import (
     ClaimVerdict,
@@ -19,6 +19,7 @@ from maxim.schemas import (
     DraftDossier,
     DraftEvidence,
     DraftFinding,
+    ResearchBrief,
 )
 from maxim.usage import UsageLedger
 
@@ -69,19 +70,27 @@ def cr(verdicts, gaps=None) -> CritiqueResult:
 class ScriptedLLM:
     """Pops scripted drafts/critiques per call; records every agentic turn."""
 
-    def __init__(self, drafts, critiques, budget_usd=10.0):
+    def __init__(self, drafts, critiques, budget_usd=10.0, briefs=None, replan_raises=False):
         self.drafts = list(drafts)
         self.critiques = list(critiques)
+        self.briefs = list(briefs or [])
+        self.replan_raises = replan_raises
         self.ledger = UsageLedger(budget_usd=budget_usd)
         self.agentic_calls: list[dict] = []
         self.parse_calls: list[dict] = []
 
     async def parse(self, *, stage, system, messages, output_format, model, effort, **_):
-        self.parse_calls.append({"messages": messages, "output_format": output_format})
+        self.parse_calls.append(
+            {"stage": stage, "messages": messages, "output_format": output_format}
+        )
         if output_format is DraftDossier:
             return self.drafts.pop(0)
         if output_format is CritiqueResult:
             return self.critiques.pop(0)
+        if output_format is ResearchBrief:
+            if self.replan_raises:
+                raise LLMError("replanner: API call failed: 529")
+            return self.briefs.pop(0)
         raise AssertionError(f"unexpected parse: {output_format}")
 
     async def run_agentic(self, *, messages, tools, **_):
@@ -96,6 +105,7 @@ class ScriptedLLM:
             cited_quotes=[],
             continuations=0,
             truncated=False,
+            queries=[f"scripted query {len(self.agentic_calls)}"],
         )
 
 
@@ -257,16 +267,87 @@ async def test_budget_exhaustion_stops_loop():
     assert any("budget" in g for g in dossier.gaps)
 
 
-async def test_structural_failure_recorded_when_replan_unavailable():
-    draft1 = dd([df("claim 1", "m1"), df("claim 2", "m2")])
-    critique1 = cr([("F-ai1", "supported", None), ("F-ai2", "supported", None)])
-    llm = ScriptedLLM(drafts=[draft1], critiques=[critique1])
+def _revised_brief() -> ResearchBrief:
+    return ResearchBrief(
+        perspective="ai_agentic",
+        objective="Attack the topic via benchmark write-ups instead",
+        sub_questions=["Which benchmarks exist?"],
+        seed_queries=["telemetry anomaly benchmark 2026"],
+        must_cover_methods=[],
+        avoid=[],
+    )
+
+
+async def test_replan_restarts_in_fresh_conversation():
+    # Pass 1: only 1 validated finding (< min 3) → structural → REPLAN.
+    draft1 = dd([df("claim 1", "m1")])
+    critique1 = cr([("F-ai1", "supported", None)])
+    draft2 = dd([df(f"replanned claim {i}", f"n{i}") for i in range(1, 5)])
+    critique2 = cr([(f"F-ai{i}", "supported", None) for i in range(2, 6)])
+    llm = ScriptedLLM(
+        drafts=[draft1, draft2],
+        critiques=[critique1, critique2],
+        briefs=[_revised_brief()],
+    )
 
     dossier = await _run(llm)
 
+    assert dossier.loop_actions == ["replan"]
+    assert dossier.iterations == 2
+    # Pass-1 validated finding is kept; replanned findings continue the ids.
+    assert [f.id for f in dossier.findings] == ["F-ai1", "F-ai2", "F-ai3", "F-ai4", "F-ai5"]
+
+    # The replan gather is a FRESH conversation (one user message, no prior
+    # transcript) built on the revised brief, carrying the tried queries.
+    replan_gather = llm.agentic_calls[1]["messages"]
+    assert len(replan_gather) == 1
+    content = replan_gather[0]["content"]
+    assert "benchmark write-ups" in content
+    assert "scripted query 1" in content  # do-not-repeat list
+    assert "claim 1" in content  # locked-in claim list
+
+    # replan_task itself was seeded with the failure reasons.
+    replan_parse = next(c for c in llm.parse_calls if c["output_format"] is ResearchBrief)
+    assert "1 validated" in replan_parse["messages"][0]["content"]
+
+
+async def test_replan_failure_keeps_partial_results():
+    draft1 = dd([df("claim 1", "m1")])
+    critique1 = cr([("F-ai1", "supported", None)])
+    llm = ScriptedLLM(drafts=[draft1], critiques=[critique1], replan_raises=True)
+
+    dossier = await _run(llm)
+
+    assert dossier.ok
     assert dossier.iterations == 1
-    assert len(dossier.findings) == 2
-    assert any("structural weakness" in g for g in dossier.gaps)
+    assert len(dossier.findings) == 1
+    assert any("replan failed" in g for g in dossier.gaps)
+    # Repair work was pending, so confidence is capped.
+    assert dossier.findings[0].confidence == "medium"
+
+
+async def test_quick_depth_records_structural_weakness_without_replan():
+    # quick's LoopPolicy has max_replans=0: the weakness is recorded, no
+    # replanner call is made.
+    draft1 = dd([df("claim 1", "m1")])
+    critique1 = cr([("F-ai1", "supported", None)])
+    llm = ScriptedLLM(drafts=[draft1], critiques=[critique1])
+
+    dossier = await run_researcher(
+        make_brief("ai_agentic"),
+        make_plan(),
+        Settings(depth="quick"),
+        llm,
+        progress=lambda _msg: None,
+    )
+
+    assert dossier.iterations == 1
+    assert len(dossier.findings) == 1
+    assert all(c["output_format"] is not ResearchBrief for c in llm.parse_calls)
+    assert dossier.loop_actions == []
+    # The weakness is not silently passed off as healthy.
+    assert any("replan cap spent" in g for g in dossier.gaps)
+    assert dossier.findings[0].confidence == "medium"
 
 
 async def test_retry_cap_exhausts_then_accepts():

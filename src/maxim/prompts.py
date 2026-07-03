@@ -102,6 +102,24 @@ else null.
 sub-questions in gaps.
 - Quality over quantity: 5-10 solid findings beat 20 weak ones."""
 
+REPLANNER_SYSTEM = """\
+You are the replanning stage of Maxim. A researcher's pass at its brief failed \
+structurally — too few grounded findings, mostly unsupported claims, or unanswered \
+sub-questions. Write a REVISED brief for the SAME perspective that attacks the topic \
+from a genuinely different angle.
+
+Rules:
+1. Keep the perspective and the overall topic fixed; change the approach: sharper \
+objective, reformulated sub_questions targeting what went unanswered, and NEW \
+seed_queries — never repeat or trivially rephrase a query from the already-tried list.
+2. Learn from the rejected claims: if sources kept failing verification or the critic, \
+steer toward source types more likely to ground claims (papers, official docs, \
+engineering blogs with concrete numbers).
+3. Claims already validated are locked in — do not re-cover them; aim the brief at \
+what is still missing.
+4. Keep the `avoid` list at least as restrictive as the original brief's.
+"""
+
 RETRY_INSTRUCTION_HEADER = """\
 The grounding critic reviewed your findings. Some need stronger evidence. For each item \
 below, search for and FETCH a better source, then capture a verbatim quote that actually \

@@ -53,6 +53,7 @@ class AgenticResult:
     cited_quotes: list[CitedQuote]
     continuations: int
     truncated: bool  # gather ended early: continuation cap, max_tokens, or budget
+    queries: list[str] = field(default_factory=list)  # web_search queries issued
 
 
 @dataclass
@@ -86,15 +87,23 @@ def harvest_blocks(
     content: list[Any],
     source_cache: dict[str, SourceDoc],
     cited_quotes: list[CitedQuote],
+    queries: list[str] | None = None,
 ) -> None:
-    """Pull fetched page text and server citations out of response content blocks.
+    """Pull fetched page text, server citations, and search queries out of
+    response content blocks.
 
     Deliberately defensive about shapes: a missed harvest degrades a finding to
     verification_skipped, it must never crash the run.
     """
     for block in content:
         btype = getattr(block, "type", None)
-        if btype == "web_fetch_tool_result":
+        if btype == "server_tool_use" and queries is not None:
+            if getattr(block, "name", None) == "web_search":
+                tool_input = getattr(block, "input", None)
+                query = tool_input.get("query") if isinstance(tool_input, dict) else None
+                if isinstance(query, str) and query.strip():
+                    queries.append(query.strip())
+        elif btype == "web_fetch_tool_result":
             inner = getattr(block, "content", None)
             if getattr(inner, "type", None) != "web_fetch_result":
                 continue  # error block
@@ -248,6 +257,7 @@ class LLM:
         transcript = list(messages)
         source_cache: dict[str, SourceDoc] = {}
         cited_quotes: list[CitedQuote] = []
+        queries: list[str] = []
         continuations = 0
         stop_reason: str | None = None
         truncated = False
@@ -267,7 +277,7 @@ class LLM:
             except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
                 raise LLMError(f"{stage}: API call failed: {exc}") from exc
             self.ledger.record(stage, model, final.usage)
-            harvest_blocks(final.content, source_cache, cited_quotes)
+            harvest_blocks(final.content, source_cache, cited_quotes, queries)
             if on_progress is not None:
                 searches, _fetches = self.ledger.stage_counts(stage)
                 on_progress(f"{len(source_cache)} pages cached · {searches} searches")
@@ -299,6 +309,7 @@ class LLM:
             cited_quotes=cited_quotes,
             continuations=continuations,
             truncated=truncated,
+            queries=queries,
         )
 
     # ----------------------------------------------------------------- stream

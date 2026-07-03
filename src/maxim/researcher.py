@@ -5,8 +5,10 @@ never LLM judgment. Per iteration the critic's verdicts split findings into
 frozen (supported — locked, never re-researched), pending-weak (kept but
 flagged; a later repair pass may supersede them), and rejected. RETRY searches
 better evidence for flagged claims only; RE-VALIDATE re-fetches exact URLs to
-repair broken quotes without new searching. REPLAN is routed here but executed
-by the orchestrator via a fresh conversation.
+repair broken quotes without new searching. REPLAN abandons the failed
+transcript entirely: planner.replan_task writes a revised brief and research
+restarts in a fresh conversation, carrying over validated findings, the
+source cache, and the list of already-tried queries.
 
 Timeouts are graceful: the orchestrator passes a soft deadline and the loop
 stops between phases, salvaging every validated finding instead of losing the
@@ -15,6 +17,7 @@ run to a hard cancel.
 
 from __future__ import annotations
 
+import json
 import re
 import time
 from collections.abc import Callable
@@ -22,8 +25,9 @@ from typing import Any
 
 from .config import Settings
 from .critic import apply_critique, critique
-from .llm import LLM, CitedQuote, SourceDoc, dump_for_prompt
+from .llm import LLM, CitedQuote, LLMError, SourceDoc, dump_for_prompt
 from .loop import IterationOutcome, LoopState, decide
+from .planner import replan_task
 from .prompts import (
     DRAFT_INSTRUCTION,
     REPAIR_DRAFT_INSTRUCTION,
@@ -117,6 +121,33 @@ def _revalidate_message(mech_rejected: list[RejectedFinding]) -> str:
         for ev in r.finding.evidence:
             if ev.status == "failed":
                 lines.append(f'- "{ev.quote}"\n  claimed from: {ev.source_url}')
+    return "\n".join(lines)
+
+
+def _replan_gather_message(
+    brief: ResearchBrief,
+    plan: ResearchPlan,
+    queries_tried: list[str],
+    validated: list[Finding],
+    rejected: list[RejectedFinding],
+) -> str:
+    lines = [
+        _gather_message(brief, plan),
+        "",
+        "This brief is a REPLAN after a structurally failed pass. Constraints:",
+    ]
+    if queries_tried:
+        lines.append(f"- Queries already tried (do not repeat): {json.dumps(queries_tried)}")
+    if validated:
+        lines.append(
+            "- Already-validated claims (locked in — do not re-research): "
+            + json.dumps([f.claim for f in validated])
+        )
+    if rejected:
+        lines.append(
+            "- Previously rejected claims (do not re-submit them or their sources): "
+            + json.dumps([r.finding.claim for r in rejected])
+        )
     return "\n".join(lines)
 
 
@@ -243,9 +274,11 @@ async def run_researcher(
     policy = preset.loop
     stage = f"researcher:{brief.perspective}"
     system = RESEARCHER_SYSTEMS[brief.perspective]
+    current_brief = brief
 
     source_cache: dict[str, SourceDoc] = {}
     cited_quotes: list[CitedQuote] = []
+    queries_tried: list[str] = []
 
     progress("searching…")
     gathered = await llm.run_agentic(
@@ -262,6 +295,7 @@ async def run_researcher(
     transcript = gathered.messages
     source_cache.update(gathered.source_cache)
     cited_quotes.extend(gathered.cited_quotes)
+    queries_tried.extend(gathered.queries)
     truncated_gather = gathered.truncated
     continuations = gathered.continuations
 
@@ -309,7 +343,7 @@ async def run_researcher(
             progress(f"critiquing {len(survivors)} findings…")
             result = await critique(
                 stage=f"critic:{brief.perspective}",
-                brief=brief,
+                brief=current_brief,
                 findings=survivors,
                 source_cache=source_cache,
                 settings=settings,
@@ -342,6 +376,11 @@ async def run_researcher(
         )
         decision = decide(outcome, state, policy)
         if decision.action == "accept":
+            if decision.degraded:
+                stop_notes.append(
+                    "accepted with repair work pending: " + "; ".join(decision.reasons)
+                )
+                stopped_with_pending_work = True
             break
         if iterations >= policy.max_iterations:
             stop_notes.append(
@@ -359,29 +398,55 @@ async def run_researcher(
             stop_notes.append("loop stopped: wall-clock deadline reached — partial results kept")
             stopped_with_pending_work = True
             break
-        if decision.action == "replan":
-            # Executed by the orchestrator with a fresh conversation (M2, next
-            # slice); until wired, the structural weakness is recorded honestly.
-            stop_notes.append("structural weakness: " + "; ".join(decision.reasons))
-            stopped_with_pending_work = True
-            break
-
         state = state.spend(decision.action)
         loop_actions.append(decision.action)
-        if decision.action == "retry":
+        if decision.action == "replan":
+            # Fresh conversation on a revised brief: a structurally failed
+            # transcript poisons further turns, so it is abandoned. Validated
+            # findings, the source cache, and tried queries carry over.
+            progress("replanning after structural failure…")
+            try:
+                current_brief = await replan_task(
+                    current_brief,
+                    plan,
+                    reasons=decision.reasons,
+                    queries_tried=queries_tried,
+                    validated=frozen + pending_weak,
+                    rejected=rejected,
+                    settings=settings,
+                    llm=llm,
+                )
+            except LLMError as exc:
+                stop_notes.append(f"replan failed ({exc}) — keeping partial results")
+                stopped_with_pending_work = True
+                break
+            progress("researching the revised brief…")
+            messages = [
+                {
+                    "role": "user",
+                    "content": _replan_gather_message(
+                        current_brief, plan, queries_tried, frozen + pending_weak, rejected
+                    ),
+                }
+            ]
+            tools = _web_tools(settings)
+            max_continuations = preset.max_continuations
+        elif decision.action == "retry":
             progress("retrying weak claims with critic hints…")
             message = _retry_message(pending_weak, critic_rejected, coverage_gaps)
+            messages = transcript + [{"role": "user", "content": message}]
             tools = _web_tools(settings)
             max_continuations = preset.max_continuations
         else:  # revalidate
             progress("re-fetching sources to repair broken quotes…")
             message = _revalidate_message(mech_rejected)
+            messages = transcript + [{"role": "user", "content": message}]
             tools = [_fetch_tool(settings, REPAIR_FETCH_MAX_USES)]
             max_continuations = REPAIR_MAX_CONTINUATIONS
         gathered = await llm.run_agentic(
             stage=stage,
             system=system,
-            messages=transcript + [{"role": "user", "content": message}],
+            messages=messages,
             tools=tools,
             model=settings.researcher_model,
             effort=preset.researcher_effort,
@@ -392,6 +457,7 @@ async def run_researcher(
         transcript = gathered.messages
         source_cache.update(gathered.source_cache)
         cited_quotes.extend(gathered.cited_quotes)
+        queries_tried.extend(gathered.queries)
         continuations += gathered.continuations
         draft_instruction = _repair_draft_instruction(frozen)
 

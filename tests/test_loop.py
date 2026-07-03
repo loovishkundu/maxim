@@ -79,6 +79,10 @@ class TestRetry:
         )
         assert decision.action == "accept"
         assert any("caps exhausted" in r for r in decision.reasons)
+        assert decision.degraded  # pending work must be surfaced by the caller
+
+    def test_clean_accept_is_not_degraded(self):
+        assert not decide(outcome(), LoopState(), POLICY).degraded
 
 
 class TestRevalidate:

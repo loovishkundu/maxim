@@ -58,6 +58,10 @@ class IterationOutcome:
 class Decision:
     action: Action
     reasons: list[str] = field(default_factory=list)
+    # True when a repair trigger fired but its cap was spent: the dossier is
+    # accepted with known pending work, which callers must surface (gap note,
+    # confidence cap) rather than passing off as healthy.
+    degraded: bool = False
 
 
 def _ratio(part: int, whole: int) -> float:
@@ -104,5 +108,6 @@ def decide(outcome: IterationOutcome, state: LoopState, policy: LoopPolicy) -> D
             return Decision("revalidate", reasons)
         reasons.append("mechanical failures but re-validate cap spent")
 
-    reasons.append("accepting dossier" + (" (loop caps exhausted)" if reasons else ""))
-    return Decision("accept", reasons)
+    degraded = bool(reasons)
+    reasons.append("accepting dossier" + (" (loop caps exhausted)" if degraded else ""))
+    return Decision("accept", reasons, degraded=degraded)
