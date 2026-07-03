@@ -15,7 +15,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-SCHEMA_VERSION = "1"
+# Bumped to "2" for M2: RunResult gained canonical_methods and pulse;
+# findings carry sentiment/engagement/tier fields; dossiers carry loop
+# telemetry. All additive, but wrappers pinning on "1" should re-check.
+SCHEMA_VERSION = "2"
 
 Perspective = Literal["ai_agentic", "classical_ml", "data_science", "statistics", "community"]
 

@@ -170,7 +170,7 @@ async def test_happy_path(monkeypatch):
         confirm=lambda plan: True,
     )
 
-    assert result.schema_version == "1"
+    assert result.schema_version == "2"
     assert len(result.dossiers) == 2
     for dossier in result.dossiers:
         assert dossier.ok

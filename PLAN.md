@@ -1,8 +1,10 @@
 # Maxim — Architecture & Build Plan
 
-> Status: M1 implemented (single-pass critique + mechanical verification; full
-> M2 loop state machine, community wave, reputation tiers, and custom tools
-> still to come).
+> Status: M2 implemented — five-loop state machine with per-depth thresholds,
+> two-wave fan-out with method canonicalization, community sentiment rigor,
+> reputation tiers, custom client-side tools, haiku-batch critic with opus
+> escalation, and a deterministic report quality gate. M3 (Claude skill,
+> calibration suite, golden-report test) still to come.
 > Maxim replaces manual internet-scrolling when you start a new feature: it scopes the topic,
 > researches it from multiple perspectives in parallel, verifies every claim against its source,
 > and synthesizes one structured, cited report — including how the community is actually
