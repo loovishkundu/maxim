@@ -14,6 +14,7 @@ from .config import Settings
 from .critic import apply_critique, critique
 from .llm import LLM, dump_for_prompt
 from .prompts import DRAFT_INSTRUCTION, RESEARCHER_SYSTEMS
+from .reputation import BLOCKED_DOMAINS, stamp_evidence
 from .schemas import (
     PERSPECTIVE_ID_PREFIX,
     DraftDossier,
@@ -33,6 +34,7 @@ def _web_tools(settings: Settings) -> list[dict[str, Any]]:
             "type": "web_search_20260209",
             "name": "web_search",
             "max_uses": preset.web_search_max_uses,
+            "blocked_domains": BLOCKED_DOMAINS,
         },
         {
             "type": "web_fetch_20260209",
@@ -40,6 +42,7 @@ def _web_tools(settings: Settings) -> list[dict[str, Any]]:
             "max_uses": preset.web_fetch_max_uses,
             "citations": {"enabled": True},
             "max_content_tokens": settings.web_fetch_max_content_tokens,
+            "blocked_domains": BLOCKED_DOMAINS,
         },
     ]
 
@@ -117,7 +120,11 @@ async def run_researcher(
     rejected: list[RejectedFinding] = []
     for n, draft_finding in enumerate(draft.findings, 1):
         evidence = [
-            verify_evidence(ev, gathered.source_cache, gathered.cited_quotes)
+            stamp_evidence(
+                verify_evidence(ev, gathered.source_cache, gathered.cited_quotes),
+                brief.perspective,
+                plan.recency_horizon_months,
+            )
             for ev in draft_finding.evidence
         ]
         finding = Finding(

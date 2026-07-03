@@ -96,6 +96,8 @@ def make_finding(fid="F-ai1", perspective="ai_agentic", status="verified") -> Fi
                 kind="blog",
                 status=status,
                 match_ratio=1.0 if status == "verified" else None,
+                tier="B",  # eng.example.com engineering blog
+                recency_score=0.8,
             )
         ],
         confidence="high",

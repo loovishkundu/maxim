@@ -6,6 +6,7 @@ import datetime as dt
 import re
 from pathlib import Path
 
+from .reputation import tier_badge, tier_mix
 from .schemas import (
     PERSPECTIVE_LABELS,
     Finding,
@@ -52,8 +53,10 @@ def _sources_section(dossiers: list[ResearchDossier], cited_ids: list[str]) -> s
             for ev in f.evidence:
                 published = f", {ev.published}" if ev.published else ""
                 status = "✓" if ev.status == "verified" else f"({ev.status})"
+                tier = f" [tier {ev.tier}]" if ev.tier else ""
                 lines.append(
-                    f"  - {ev.source_title} — <{ev.source_url}> ({ev.kind}{published}) {status}"
+                    f"  - {ev.source_title} — <{ev.source_url}> "
+                    f"({ev.kind}{published}){tier} {status}"
                 )
     return "\n".join(lines)
 
@@ -82,12 +85,16 @@ def _footer(
     warnings: list[str],
     depth: str,
 ) -> str:
+    tiers = [
+        ev.tier for dossier in dossiers for f in dossier.findings for ev in f.evidence if ev.tier
+    ]
     lines = [
         "---",
         "## Run Metadata",
         f"- Generated: {dt.datetime.now().isoformat(timespec='seconds')} · depth: {depth}",
         f"- Estimated cost: ${usage.total_cost_usd:.2f} · wall time: {usage.wall_seconds:.0f}s",
         f"- Recency horizon: {plan.recency_horizon_months} months",
+        f"- Source tier mix: {tier_badge(tier_mix(tiers))}",
     ]
     for dossier in dossiers:
         status = "ok" if dossier.ok else f"FAILED ({dossier.failure})"

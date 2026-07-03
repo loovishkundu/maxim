@@ -43,6 +43,33 @@ def test_missing_verdict_kept_but_demoted_to_low():
     assert not rejected
 
 
+def test_supported_but_weak_tier_caps_at_medium():
+    finding = make_finding("F-ai1", status="verified")
+    weak = finding.model_copy(
+        update={"evidence": [finding.evidence[0].model_copy(update={"tier": "D"})]}
+    )
+    result = CritiqueResult(
+        verdicts=[ClaimVerdict(finding_id="F-ai1", verdict="supported", fix_hint=None)],
+        coverage_gaps=[],
+    )
+    validated, _ = apply_critique([weak], result)
+    # Verified quote + supported claim, but only a forum source: not "high".
+    assert validated[0].confidence == "medium"
+
+
+def test_supported_unstamped_tier_caps_at_medium():
+    finding = make_finding("F-ai1", status="verified")
+    unstamped = finding.model_copy(
+        update={"evidence": [finding.evidence[0].model_copy(update={"tier": None})]}
+    )
+    result = CritiqueResult(
+        verdicts=[ClaimVerdict(finding_id="F-ai1", verdict="supported", fix_hint=None)],
+        coverage_gaps=[],
+    )
+    validated, _ = apply_critique([unstamped], result)
+    assert validated[0].confidence == "medium"
+
+
 def test_verdict_id_drift_is_tolerated():
     findings = [make_finding("F-ai1", status="verified")]
     result = CritiqueResult(

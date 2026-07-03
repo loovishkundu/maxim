@@ -117,6 +117,9 @@ class DraftDossier(StrictModel):
 # ------------------------------------------------------------------ enriched findings
 
 
+SourceTier = Literal["A", "B", "C", "D"]
+
+
 class Evidence(StrictModel):
     quote: str
     source_url: str
@@ -125,6 +128,9 @@ class Evidence(StrictModel):
     kind: EvidenceKind
     status: VerificationStatus
     match_ratio: float | None
+    # Stamped by reputation.py (deterministic), never by the model.
+    tier: SourceTier | None = None
+    recency_score: float | None = None
 
 
 class Finding(StrictModel):

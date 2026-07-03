@@ -73,10 +73,20 @@ async def critique(
 
 
 def _stamp_confidence(finding: Finding, verdict: Verdict) -> Confidence:
-    """Deterministic rubric — the model never sets confidence."""
+    """Deterministic rubric — the model never sets confidence.
+
+    "high" demands the full chain: critic-supported + mechanically verified
+    quote + a reputable (tier A/B) source. Unstamped tiers (None) count as
+    unknown, not reputable.
+    """
     any_verified = any(ev.status == "verified" for ev in finding.evidence)
+    strong_source = any(
+        ev.status == "verified" and ev.tier in ("A", "B") for ev in finding.evidence
+    )
     if verdict == "supported":
-        return "high" if any_verified else "low"
+        if strong_source:
+            return "high"
+        return "medium" if any_verified else "low"
     if verdict == "partially_supported":
         return "medium" if any_verified else "low"
     return "low"
