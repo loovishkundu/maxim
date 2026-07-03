@@ -63,7 +63,11 @@ are listed in the report appendix, never silently kept.
 
 ```bash
 uv run pytest        # tests (no network needed)
-uv run ruff check .  # lint
+
+# lint — all three must pass before any commit (see CLAUDE.md)
+uv run isort .
+uv run black .
+uv run ruff check .
 ```
 
 ## Project layout
@@ -72,6 +76,7 @@ uv run ruff check .  # lint
 src/maxim/       # application source (pipeline stages, one module each)
 tests/           # test suite — FakeLLM end-to-end, no network
 PLAN.md          # architecture plan
+CLAUDE.md        # project rules (lint gate, test gate, environment quirks)
 .env.example     # template for API keys (copy to .env, never commit .env)
 ```
 
