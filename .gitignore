@@ -1,0 +1,77 @@
+# --- Python ---
+__pycache__/
+*.py[oc]
+*$py.class
+build/
+dist/
+wheels/
+*.egg-info
+*.egg
+
+# --- Virtual environments ---
+.venv
+venv/
+env/
+
+# --- uv ---
+# uv.lock IS committed for reproducibility; only ignore local cache artifacts
+.uv-cache/
+
+# --- Secrets & environment variables ---
+# Never commit real secrets. Only .env.example (a template) should be tracked.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+secrets.*
+credentials.json
+credentials.*.json
+token.json
+*.token
+.secrets/
+config/secrets.yaml
+config/secrets.yml
+
+# --- Testing & tooling caches ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+
+# --- Jupyter / notebooks ---
+.ipynb_checkpoints/
+
+# --- Maxim output ---
+# Generated research reports are per-run artifacts, not source.
+maxim-reports/
+
+# --- Research agent runtime artifacts ---
+# Scraped/cached content, vector store data, downloaded papers, and logs
+# should stay local, not versioned.
+data/
+.cache/
+cache/
+output/
+outputs/
+downloads/
+logs/
+*.log
+*.db
+*.sqlite
+*.sqlite3
+
+# --- IDE / editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- OS ---
+.DS_Store
+Thumbs.db
