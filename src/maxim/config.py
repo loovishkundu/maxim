@@ -28,6 +28,25 @@ WEB_SEARCH_PER_1K_USD = 10.0
 
 
 @dataclass(frozen=True)
+class LoopPolicy:
+    """Pass-gate thresholds and loop caps for one depth.
+
+    Per-depth values, not constants: niche perspectives can be legitimately
+    thin, and hard gates would burn budget on futile retries. Ratios are over
+    the number of drafted findings in an iteration.
+    """
+
+    min_findings: int
+    max_evidence_retries: int
+    max_revalidates: int
+    max_replans: int
+    retry_weak_ratio: float = 0.2  # weak+unsupported share above this → RETRY
+    replan_unsupported_ratio: float = 0.5  # unsupported share above this → REPLAN
+    revalidate_mechanical_ratio: float = 0.3  # mechanical failures at/below this → RE-VALIDATE
+    replan_coverage_gaps: int = 2  # gaps at/above this → REPLAN
+
+
+@dataclass(frozen=True)
 class DepthPreset:
     """Per-depth budget knobs. All hard caps enforced in code, not prompts."""
 
@@ -38,6 +57,7 @@ class DepthPreset:
     researcher_timeout_s: float
     gather_max_tokens: int
     synthesis_max_tokens: int
+    loop: LoopPolicy
 
 
 DEPTHS: dict[str, DepthPreset] = {
@@ -49,6 +69,7 @@ DEPTHS: dict[str, DepthPreset] = {
         researcher_timeout_s=300.0,
         gather_max_tokens=8_000,
         synthesis_max_tokens=16_000,
+        loop=LoopPolicy(min_findings=2, max_evidence_retries=1, max_revalidates=1, max_replans=0),
     ),
     "standard": DepthPreset(
         researcher_effort="medium",
@@ -58,6 +79,7 @@ DEPTHS: dict[str, DepthPreset] = {
         researcher_timeout_s=600.0,
         gather_max_tokens=12_000,
         synthesis_max_tokens=24_000,
+        loop=LoopPolicy(min_findings=3, max_evidence_retries=2, max_revalidates=2, max_replans=1),
     ),
     "deep": DepthPreset(
         researcher_effort="high",
@@ -67,6 +89,7 @@ DEPTHS: dict[str, DepthPreset] = {
         researcher_timeout_s=900.0,
         gather_max_tokens=20_000,
         synthesis_max_tokens=32_000,
+        loop=LoopPolicy(min_findings=4, max_evidence_retries=2, max_revalidates=2, max_replans=1),
     ),
 }
 

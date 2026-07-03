@@ -178,6 +178,11 @@ class ResearchDossier(StrictModel):
     web_searches: int
     web_fetches: int
     continuations: int
+    # Loop-state-machine telemetry (M2): how many draft→verify→critique passes
+    # ran and which loop actions were taken, e.g. ["retry", "revalidate"].
+    iterations: int = 1
+    loop_actions: list[str] = Field(default_factory=list)
+    budget_exhausted: bool = False
 
 
 # -------------------------------------------------------------------------- usage
