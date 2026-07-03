@@ -58,7 +58,7 @@ Key architectural commitments (each adjudicated by an adversarial design review)
 | # | Requirement | Mechanism |
 |---|---|---|
 | 1 | Understand query, scope domains | `planner.py`: one `messages.parse` call → `ResearchPlan` (domain classification, in-scope perspectives with rationale, recency horizon, per-perspective briefs). Plan's assumptions printed before fan-out; `--yes` skips confirmation. |
-| 2 | Spawn multiple research agents | `orchestrator.py`: `asyncio.gather` over researchers behind `Semaphore(3)` + `asyncio.wait_for` per agent; cache-warm staggering (fire one, await first token, then the rest). |
+| 2 | Spawn multiple research agents | `orchestrator.py`: `asyncio.gather` over researchers behind `Semaphore(3)` + `asyncio.wait_for` per agent (soft deadline + salvage checkpoint; hard `wait_for` as a hang backstop). |
 | 3 | Reputable, recent sources | Server-side `web_search`/`web_fetch` + optional Semantic Scholar/arXiv tools; `reputation.py` A–D tier scoring (score, not filter; SEO-farm blocklist → `blocked_domains`); per-perspective recency half-lives modulated by planner's topic-level horizon. Tier mix shown in report. |
 | 4 | Multi-perspective + reviews | One researcher per perspective, each brief carries an `avoid` field ("no LLM/GenAI methods" for ML/DS/stats) against perspective collapse. Wave-2 community researcher with corroboration rules + `how_people_test_it` per method. |
 | 5 | Critique tool grounding each agent | Two gates: mechanical verify (quote-in-`SourceCache` fuzzy match ≥0.85; server `cited_text` blocks pre-verified) then fresh-context LLM critic (sees only claim + ±500-char cached excerpt — never the researcher's reasoning). |
@@ -191,9 +191,14 @@ because HN/Reddit/GitHub are noisy:
 
 ## 7. Model strategy & cost
 
-All Opus 4.8 unless noted; adaptive thinking; **no `temperature`/`top_p`/`top_k` anywhere**
-(they 400 on Opus 4.8). Byte-stable system prompts with `cache_control: ephemeral`;
-staggered fan-out converts the shared prefix to ~0.1× cache reads for agents 2–5.
+All Opus 4.8 unless noted; adaptive thinking (omitted on models that reject it, e.g.
+haiku); **no `temperature`/`top_p`/`top_k` anywhere** (they 400 on Opus 4.8). Byte-stable
+system prompts with `cache_control: ephemeral`. (An earlier draft planned cache-warm
+staggered fan-out — fire one researcher, await first token, then the rest. Dropped as
+vacuous: prompt caching is a prefix match over tools+system, each perspective has a
+different system prompt, and the shared tools block alone is below the cacheable
+minimum, so agents share no warmable prefix. Caching pays off *within* each
+researcher's own multi-turn loop instead.)
 
 | Stage | Model | Effort | Notes |
 |---|---|---|---|
@@ -299,7 +304,7 @@ synthesizer → markdown report → CLI with rich progress → FakeLLM tests →
 `.env.example`. Result: `uv sync && maxim "topic"` produces a real, cited, verified report.
 
 **M2 — full breadth and rigor** (reqs 2, 4, 5, 6 complete): two-wave fan-out (4 perspectives
-+ canonicalization + community wave) with semaphore/timeouts/cache-warm ordering; complete
++ canonicalization + community wave) with semaphore and graceful timeouts; complete
 five-loop state machine with per-depth thresholds; `reputation.py` tiers + recency half-lives
 + tier-mix badge; sentiment rigor (corroboration, floors, aboutness, `insufficient_data`,
 `how_people_test_it`); custom tools with graceful no-key degradation; haiku-batch + opus
