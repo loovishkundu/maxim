@@ -23,6 +23,27 @@ T = TypeVar("T", bound=BaseModel)
 
 THINKING = {"type": "adaptive"}
 
+# Models on the adaptive-thinking / effort API surface. Haiku 4.5 supports
+# neither adaptive thinking nor output_config.effort — sending either 400s —
+# so calls to models outside this list go out with both omitted.
+_ADAPTIVE_MODEL_PREFIXES = (
+    "claude-opus-4-6",
+    "claude-opus-4-7",
+    "claude-opus-4-8",
+    "claude-sonnet-4-6",
+    "claude-sonnet-5",
+    "claude-fable",
+    "claude-mythos",
+)
+
+
+def thinking_kwargs(model: str, effort: str) -> dict[str, Any]:
+    """Per-model thinking/effort request params (empty for e.g. haiku)."""
+    if model.startswith(_ADAPTIVE_MODEL_PREFIXES):
+        return {"thinking": THINKING, "output_config": {"effort": effort}}
+    return {}
+
+
 _TOOL_RESULT_TYPES = {"web_search_tool_result", "web_fetch_tool_result", "tool_result"}
 _TOOL_USE_TYPES = {"server_tool_use", "tool_use"}
 
@@ -102,6 +123,11 @@ def _system_blocks(system: str) -> list[dict[str, Any]]:
 
 def _document_text(doc: Any) -> str | None:
     source = getattr(doc, "source", None)
+    if getattr(source, "type", None) == "base64":
+        # PDF payload (Base64PDFSource.data is also a str) — harvesting it as
+        # page text would fail every genuine quote against base64 noise.
+        # Returning None leaves the evidence verification_skipped instead.
+        return None
     data = getattr(source, "data", None)
     if isinstance(data, str) and data.strip():
         return data
@@ -218,9 +244,8 @@ class LLM:
                     max_tokens=max_tokens,
                     system=_system_blocks(system),
                     messages=attempt_messages,
-                    thinking=THINKING,
-                    output_config={"effort": effort},
                     output_format=output_format,
+                    **thinking_kwargs(model, effort),
                 )
             except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
                 # SDK already retried transport-level failures; treat as fatal.
@@ -313,8 +338,7 @@ class LLM:
                     system=_system_blocks(system),
                     messages=transcript,
                     tools=api_tools,
-                    thinking=THINKING,
-                    output_config={"effort": effort},
+                    **thinking_kwargs(model, effort),
                 ) as stream:
                     final = await stream.get_final_message()
             except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
@@ -336,19 +360,26 @@ class LLM:
                 transcript = transcript + [{"role": "assistant", "content": final.content}]
                 continuations += 1
                 continue
-            if stop_reason == "tool_use" and handlers:
+            if (
+                stop_reason == "tool_use"
+                and handlers
+                and continuations < max_continuations
+                and not self.ledger.over_budget
+            ):
+                # Budget checked BEFORE running handlers: executing tools whose
+                # results are guaranteed to be discarded wastes real HTTP calls.
                 results = await self._run_client_tools(
                     final.content, handlers, uses, source_cache, engagement
                 )
-                if results and continuations < max_continuations and not self.ledger.over_budget:
+                if results:
                     transcript = transcript + [
                         {"role": "assistant", "content": final.content},
                         {"role": "user", "content": results},
                     ]
                     continuations += 1
                     continue
-                # Out of budget mid-tool-call: fall through to the early-stop
-                # cleanup below rather than leaving unresolved tool_use blocks.
+                # Degenerate tool_use with no blocks: fall through to the
+                # early-stop cleanup rather than leaving unresolved tool_use.
             # Terminal: either a clean end_turn, or an early stop (continuation
             # cap / budget while paused / max_tokens / unresolvable tool_use).
             # Early stops can leave a dangling tool_use that would poison the
@@ -428,8 +459,7 @@ class LLM:
                 max_tokens=max_tokens,
                 system=_system_blocks(system),
                 messages=messages,
-                thinking=THINKING,
-                output_config={"effort": effort},
+                **thinking_kwargs(model, effort),
             ) as stream:
                 if on_text is not None:
                     async for chunk in stream.text_stream:

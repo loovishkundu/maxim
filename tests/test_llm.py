@@ -9,6 +9,7 @@ from maxim.llm import (
     ToolOutcome,
     harvest_blocks,
     strip_dangling_tool_use,
+    thinking_kwargs,
 )
 from maxim.usage import UsageLedger
 
@@ -272,3 +273,65 @@ class TestClientToolLoop:
         last = result.messages[-1]
         assert last["role"] == "assistant"
         assert [getattr(b, "type", None) for b in last["content"]] == ["text"]
+
+
+class TestThinkingKwargs:
+    def test_adaptive_models_get_thinking_and_effort(self):
+        kwargs = thinking_kwargs("claude-opus-4-8", "low")
+        assert kwargs == {"thinking": {"type": "adaptive"}, "output_config": {"effort": "low"}}
+
+    def test_haiku_gets_neither(self):
+        # haiku-4-5 400s on adaptive thinking AND on output_config.effort;
+        # the critic batch calls run on it, so this must stay empty.
+        assert thinking_kwargs("claude-haiku-4-5", "low") == {}
+
+    def test_fable_and_sonnet5_supported(self):
+        assert thinking_kwargs("claude-fable-5", "high")
+        assert thinking_kwargs("claude-sonnet-5", "high")
+
+
+class TestDocumentHarvest:
+    def test_base64_pdf_source_not_harvested_as_text(self):
+        # A base64 PDF's data is a str; caching it as page text would fail
+        # every genuine quote against base64 noise. It must be skipped so the
+        # evidence degrades to verification_skipped instead.
+        cache: dict[str, SourceDoc] = {}
+        block = _fetch_result("https://a.com/paper.pdf", "unused")
+        block.content.content = NS(source=NS(type="base64", data="JVBERi0xLjQK..."))
+        harvest_blocks([block], cache, [])
+        assert "https://a.com/paper.pdf" not in cache
+
+    def test_plain_text_source_still_harvested(self):
+        cache: dict[str, SourceDoc] = {}
+        block = _fetch_result("https://a.com", "page text")
+        harvest_blocks([block], cache, [])
+        assert cache["https://a.com"].text == "page text"
+
+    async def test_no_handler_execution_when_budget_already_spent(self):
+        calls = []
+
+        async def handler(tool_input):
+            calls.append(tool_input)
+            return ToolOutcome(content="ok")
+
+        llm = _llm(
+            [
+                _message(
+                    [_tool_use("tu1", "hn_search", {"query": "a"})],
+                    "tool_use",
+                ),
+            ]
+        )
+        result = await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[_client_tool(handler)],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=0,
+        )
+        # The result would be discarded, so the tool must never execute.
+        assert calls == []
+        assert result.truncated
