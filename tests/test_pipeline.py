@@ -292,3 +292,8 @@ async def test_two_wave_community_seeded_with_canonical_methods(monkeypatch):
     assert any(label == "canonicalizer" for label, _ in events)
     by_perspective = {d.perspective: d for d in result.dossiers}
     assert set(by_perspective) == {"ai_agentic", "statistics", "community"}
+
+    # Pulse is mechanical: with no model-claimed sentiment and few threads,
+    # honesty demands insufficient_data — never an invented verdict.
+    assert result.pulse
+    assert all(p.sentiment == "insufficient_data" for p in result.pulse)

@@ -22,7 +22,15 @@ from .methods import apply_canonical_names, canonical_names, canonicalize_method
 from .planner import make_plan
 from .report import assemble_report, fallback_report
 from .researcher import run_researcher, stub_dossier
-from .schemas import SCHEMA_VERSION, ResearchBrief, ResearchDossier, ResearchPlan, RunResult
+from .schemas import (
+    SCHEMA_VERSION,
+    MethodPulse,
+    ResearchBrief,
+    ResearchDossier,
+    ResearchPlan,
+    RunResult,
+)
+from .sentiment import build_pulse
 from .synthesizer import synthesize
 from .usage import UsageLedger
 
@@ -118,6 +126,7 @@ async def run_pipeline(
             dossiers = [apply_canonical_names(d, mapping) for d in dossiers]
         canonical = canonical_names(mapping)
 
+        pulse: list[MethodPulse] = []
         if community_brief is not None:
             if canonical:
                 # Seed wave 2 with what wave 1 actually found, not planner
@@ -128,6 +137,7 @@ async def run_pipeline(
                 )
             community_dossier = apply_canonical_names(await guarded(community_brief), mapping)
             dossiers.append(community_dossier)
+            pulse = build_pulse(community_dossier.findings)
 
         if ledger.unknown_models:
             models = ", ".join(sorted(ledger.unknown_models))
@@ -153,6 +163,7 @@ async def run_pipeline(
                     settings,
                     llm,
                     canonical_methods=canonical,
+                    pulse=pulse,
                     on_text=on_synthesis_text,
                 )
             except LLMError as exc:
@@ -199,6 +210,7 @@ async def run_pipeline(
             plan=plan,
             dossiers=dossiers,
             canonical_methods=canonical,
+            pulse=pulse,
             report_markdown=report_md,
             usage=ledger.to_run_usage(),
             partial=partial,

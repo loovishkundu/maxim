@@ -104,6 +104,18 @@ else null.
 sub-questions in gaps.
 - Quality over quantity: 5-10 solid findings beat 20 weak ones."""
 
+COMMUNITY_DRAFT_SUFFIX = """
+
+Community-specific fields:
+- Set `sentiment` (positive/mixed/negative) ONLY when the quotes genuinely express it \
+about that method; leave null for factual observations. Corroboration is checked \
+mechanically — sentiment backed by a single thread will be demoted, so prefer \
+findings whose evidence spans multiple independent threads.
+- Fill `how_people_test_it` with concrete evaluation approaches seen in the wild \
+(benchmarks, eval harnesses, A/B setups, acceptance thresholds) for that method.
+- Prefer `benchmark` / `production_report` evidence kinds over `anecdote` where the \
+source supports it — they rank higher at synthesis."""
+
 REPLANNER_SYSTEM = """\
 You are the replanning stage of Maxim. A researcher's pass at its brief failed \
 structurally — too few grounded findings, mostly unsupported claims, or unanswered \
@@ -175,7 +187,10 @@ subject, hypotheticals) are `contradicted` or `unsupported`.
 you more skeptical, not less.
 4. Return one verdict per finding id, and a short fix_hint when a better search or \
 source could rescue the claim.
-5. Fill coverage_gaps with sub-questions from the brief that no finding addresses."""
+5. Fill coverage_gaps with sub-questions from the brief that no finding addresses.
+6. ABOUTNESS, for community-sentiment claims: the quote must express the claimed \
+sentiment about the claimed method specifically. Sentiment aimed at a neighboring \
+tool, a different version, or the thread's side topic is `unsupported`."""
 
 CANONICALIZER_SYSTEM = """\
 You canonicalize method names collected by parallel research agents so one method does \

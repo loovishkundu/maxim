@@ -13,7 +13,7 @@ from collections.abc import Callable
 from .config import Settings
 from .llm import LLM, StreamResult
 from .prompts import SYNTHESIZER_SYSTEM
-from .schemas import PERSPECTIVE_LABELS, ResearchDossier, ResearchPlan
+from .schemas import PERSPECTIVE_LABELS, MethodPulse, ResearchDossier, ResearchPlan
 
 
 def _findings_payload(dossier: ResearchDossier) -> list[dict]:
@@ -45,6 +45,7 @@ def build_synthesis_input(
     plan: ResearchPlan,
     dossiers: list[ResearchDossier],
     canonical_methods: list[str] | None = None,
+    pulse: list[MethodPulse] | None = None,
 ) -> str:
     parts: list[str] = [
         f"Topic: {plan.topic}",
@@ -56,6 +57,13 @@ def build_synthesis_input(
         parts.append(
             "Canonical method names (use EXACTLY these spellings in the Method "
             f"Landscape table): {json.dumps(canonical_methods, ensure_ascii=False)}"
+        )
+    if pulse:
+        parts.append(
+            "Community pulse (MECHANICAL aggregates — sentiment and sample sizes "
+            "are computed, not guessed; render insufficient_data as '–' and hedge "
+            "by sample size):\n"
+            + json.dumps([p.model_dump() for p in pulse], ensure_ascii=False, indent=1)
         )
     if plan.out_of_scope:
         parts.append(
@@ -90,6 +98,7 @@ async def synthesize(
     settings: Settings,
     llm: LLM,
     canonical_methods: list[str] | None = None,
+    pulse: list[MethodPulse] | None = None,
     on_text: Callable[[str], None] | None = None,
 ) -> StreamResult:
     return await llm.stream_text(
@@ -98,7 +107,7 @@ async def synthesize(
         messages=[
             {
                 "role": "user",
-                "content": build_synthesis_input(plan, dossiers, canonical_methods),
+                "content": build_synthesis_input(plan, dossiers, canonical_methods, pulse),
             }
         ],
         model=settings.synthesizer_model,

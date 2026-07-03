@@ -55,6 +55,8 @@ Verdict = Literal[
 
 Confidence = Literal["high", "medium", "low"]
 
+Sentiment = Literal["positive", "mixed", "negative", "insufficient_data"]
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -105,6 +107,9 @@ class DraftFinding(StrictModel):
     # constraints); a violation triggers the parse retry loop.
     evidence: list[DraftEvidence] = Field(min_length=1)
     caveats: list[str]
+    # Community researcher only; code demotes sentiment lacking corroboration.
+    sentiment: Literal["positive", "mixed", "negative"] | None = None
+    how_people_test_it: list[str] = Field(default_factory=list)
 
 
 class DraftDossier(StrictModel):
@@ -141,6 +146,8 @@ class Evidence(StrictModel):
     # Stamped by reputation.py (deterministic), never by the model.
     tier: SourceTier | None = None
     recency_score: float | None = None
+    # Stamped from tool metadata (deterministic); None when unavailable.
+    engagement: EngagementStats | None = None
 
 
 class Finding(StrictModel):
@@ -152,6 +159,11 @@ class Finding(StrictModel):
     confidence: Confidence
     verdict: Verdict | None
     caveats: list[str]
+    # Community only. Sentiment survives only with mechanical corroboration
+    # (≥2 distinct qualifying threads); sample size is stamped by code.
+    sentiment: Literal["positive", "mixed", "negative"] | None = None
+    sentiment_sample_size: int | None = None
+    how_people_test_it: list[str] = Field(default_factory=list)
 
 
 class RejectedFinding(StrictModel):
@@ -216,6 +228,19 @@ class ResearchDossier(StrictModel):
     budget_exhausted: bool = False
 
 
+# -------------------------------------------------------------------- community pulse
+
+
+class MethodPulse(StrictModel):
+    """Mechanical per-method aggregate of the community findings."""
+
+    method: str
+    sentiment: Sentiment
+    sample_size: int  # distinct qualifying threads across the method's findings
+    notable_threads: list[str]
+    how_people_test_it: list[str]
+
+
 # -------------------------------------------------------------------------- usage
 
 
@@ -249,6 +274,7 @@ class RunResult(StrictModel):
     # Canonical method names shared across perspectives (wave-1 union after
     # canonicalization) — the vocabulary of the Method Landscape table.
     canonical_methods: list[str] = Field(default_factory=list)
+    pulse: list[MethodPulse] = Field(default_factory=list)
     report_markdown: str
     usage: RunUsage
     partial: bool

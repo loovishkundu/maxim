@@ -29,6 +29,7 @@ from .llm import LLM, CitedQuote, LLMError, SourceDoc, dump_for_prompt
 from .loop import IterationOutcome, LoopState, decide
 from .planner import replan_task
 from .prompts import (
+    COMMUNITY_DRAFT_SUFFIX,
     DRAFT_INSTRUCTION,
     REPAIR_DRAFT_INSTRUCTION,
     RESEARCHER_SYSTEMS,
@@ -39,12 +40,14 @@ from .reputation import BLOCKED_DOMAINS, stamp_evidence
 from .schemas import (
     PERSPECTIVE_ID_PREFIX,
     DraftDossier,
+    EngagementStats,
     Finding,
     RejectedFinding,
     ResearchBrief,
     ResearchDossier,
     ResearchPlan,
 )
+from .sentiment import apply_sentiment_rigor
 from .tools import client_tools_for
 from .verification import verify_evidence
 
@@ -208,6 +211,7 @@ def _mechanical_gate(
     plan: ResearchPlan,
     source_cache: dict[str, SourceDoc],
     cited_quotes: list[CitedQuote],
+    engagement: dict[str, EngagementStats],
     next_id: int,
 ) -> tuple[list[Finding], list[RejectedFinding], int]:
     """Verify + stamp every draft finding; reject provable fabrications."""
@@ -220,7 +224,7 @@ def _mechanical_gate(
                 verify_evidence(ev, source_cache, cited_quotes),
                 brief.perspective,
                 plan.recency_horizon_months,
-            )
+            ).model_copy(update={"engagement": engagement.get(ev.source_url)})
             for ev in draft_finding.evidence
         ]
         finding = Finding(
@@ -232,6 +236,8 @@ def _mechanical_gate(
             confidence="low",
             verdict=None,
             caveats=draft_finding.caveats,
+            sentiment=draft_finding.sentiment,
+            how_people_test_it=draft_finding.how_people_test_it,
         )
         next_id += 1
         statuses = {ev.status for ev in evidence}
@@ -285,6 +291,7 @@ async def run_researcher(
     source_cache: dict[str, SourceDoc] = {}
     cited_quotes: list[CitedQuote] = []
     queries_tried: list[str] = []
+    engagement: dict[str, EngagementStats] = {}
 
     progress("searching…")
     gathered = await llm.run_agentic(
@@ -302,6 +309,7 @@ async def run_researcher(
     source_cache.update(gathered.source_cache)
     cited_quotes.extend(gathered.cited_quotes)
     queries_tried.extend(gathered.queries)
+    engagement.update(gathered.engagement)
     truncated_gather = gathered.truncated
     continuations = gathered.continuations
 
@@ -320,7 +328,8 @@ async def run_researcher(
     methods: list[str] = []
     draft_gaps: list[str] = []
     next_id = 1
-    draft_instruction = DRAFT_INSTRUCTION
+    community = brief.perspective == "community"
+    draft_instruction = DRAFT_INSTRUCTION + (COMMUNITY_DRAFT_SUFFIX if community else "")
 
     while True:
         iterations += 1
@@ -339,7 +348,7 @@ async def run_researcher(
         draft_gaps = _merge_unique(draft_gaps, draft.gaps)
 
         survivors, mech_rejected, next_id = _mechanical_gate(
-            draft, brief, plan, source_cache, cited_quotes, next_id
+            draft, brief, plan, source_cache, cited_quotes, engagement, next_id
         )
         rejected.extend(mech_rejected)
 
@@ -464,10 +473,15 @@ async def run_researcher(
         source_cache.update(gathered.source_cache)
         cited_quotes.extend(gathered.cited_quotes)
         queries_tried.extend(gathered.queries)
+        engagement.update(gathered.engagement)
         continuations += gathered.continuations
-        draft_instruction = _repair_draft_instruction(frozen)
+        draft_instruction = _repair_draft_instruction(frozen) + (
+            COMMUNITY_DRAFT_SUFFIX if community else ""
+        )
 
     findings = sorted(frozen + pending_weak, key=_id_ordinal)
+    if community:
+        findings = apply_sentiment_rigor(findings)
     if stopped_with_pending_work:
         findings = _cap_confidence(
             findings, "run ended with repair work pending — confidence capped"
