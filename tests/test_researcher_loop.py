@@ -526,3 +526,40 @@ async def test_mid_loop_draft_failure_salvages_validated_findings():
     assert any("draft extraction failed" in g for g in dossier.gaps)
     # Work was pending: confidence capped.
     assert all(f.confidence in ("medium", "low") for f in dossier.findings)
+
+
+async def test_checkpoint_snapshot_written_each_pass():
+    # If the hard-timeout backstop cancels the coroutine mid-pass, the
+    # orchestrator salvages this snapshot — it must hold the last completed
+    # pass with capped confidence, not a stub.
+    draft1 = dd([df(f"claim {i}", f"m{i}") for i in range(1, 6)])
+    critique1 = cr(
+        [(f"F-ai{i}", "supported", None) for i in range(1, 4)]
+        + [
+            ("F-ai4", "partially_supported", None),
+            ("F-ai5", "partially_supported", None),
+        ]
+    )
+    draft2 = dd(
+        [
+            df("claim 4 repaired", "m4", quote=REPAIR_QUOTE, url=REPAIR_URL),
+            df("claim 5 repaired", "m5", quote=REPAIR_QUOTE, url=REPAIR_URL),
+        ]
+    )
+    critique2 = cr([("F-ai6", "supported", None), ("F-ai7", "supported", None)])
+    llm = ScriptedLLM(drafts=[draft1, draft2], critiques=[critique1, critique2])
+    checkpoint: dict = {}
+
+    await run_researcher(
+        make_brief("ai_agentic"),
+        make_plan(),
+        Settings(depth="standard"),
+        llm,
+        progress=lambda _msg: None,
+        checkpoint=checkpoint,
+    )
+
+    snapshot = checkpoint["dossier"]
+    assert len(snapshot.findings) == 5  # last completed pass
+    assert all(f.confidence in ("medium", "low") for f in snapshot.findings)
+    assert any("hard timeout" in g for g in snapshot.gaps)

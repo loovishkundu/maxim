@@ -281,6 +281,7 @@ async def run_researcher(
     llm: LLM,
     progress: Callable[[str], None],
     deadline: float | None = None,
+    checkpoint: dict[str, ResearchDossier] | None = None,
 ) -> ResearchDossier:
     preset = settings.preset
     policy = preset.loop
@@ -330,6 +331,40 @@ async def run_researcher(
     next_id = 1
     community = brief.perspective == "community"
     draft_instruction = DRAFT_INSTRUCTION + (COMMUNITY_DRAFT_SUFFIX if community else "")
+
+    def assemble(*, capped: bool, extra_notes: tuple[str, ...] = ()) -> ResearchDossier:
+        findings = sorted(frozen + pending_weak, key=_id_ordinal)
+        if community:
+            findings = apply_sentiment_rigor(findings)
+        if capped:
+            findings = _cap_confidence(
+                findings, "run ended with repair work pending — confidence capped"
+            )
+        gaps = _merge_unique(draft_gaps, coverage_gaps)
+        if truncated_gather:
+            gaps.append(
+                "research gather stopped early (continuation/token/budget cap) — "
+                "coverage may be incomplete"
+            )
+        gaps.extend(stop_notes)
+        gaps.extend(extra_notes)
+        searches, fetches = llm.ledger.stage_counts(stage)
+        return ResearchDossier(
+            perspective=brief.perspective,
+            summary=summary,
+            findings=findings,
+            rejected=rejected,
+            methods_identified=methods,
+            gaps=gaps,
+            ok=True,
+            failure=None,
+            web_searches=searches,
+            web_fetches=fetches,
+            continuations=continuations,
+            iterations=iterations,
+            loop_actions=loop_actions,
+            budget_exhausted=budget_exhausted,
+        )
 
     while True:
         iterations += 1
@@ -404,6 +439,15 @@ async def run_researcher(
             if key not in seen:
                 seen.add(key)
                 rejected.append(rejection)
+
+        if checkpoint is not None:
+            # Best-so-far snapshot: if the hard timeout backstop cancels this
+            # coroutine mid-pass, the orchestrator salvages the last completed
+            # pass instead of discarding every validated finding.
+            checkpoint["dossier"] = assemble(
+                capped=True,
+                extra_notes=("hard timeout: salvaged from the last completed pass",),
+            )
 
         outcome = IterationOutcome(
             drafted=len(draft.findings),
@@ -509,36 +553,4 @@ async def run_researcher(
             COMMUNITY_DRAFT_SUFFIX if community else ""
         )
 
-    findings = sorted(frozen + pending_weak, key=_id_ordinal)
-    if community:
-        findings = apply_sentiment_rigor(findings)
-    if stopped_with_pending_work:
-        findings = _cap_confidence(
-            findings, "run ended with repair work pending — confidence capped"
-        )
-
-    gaps = _merge_unique(draft_gaps, coverage_gaps)
-    if truncated_gather:
-        gaps.append(
-            "research gather stopped early (continuation/token/budget cap) — "
-            "coverage may be incomplete"
-        )
-    gaps.extend(stop_notes)
-
-    searches, fetches = llm.ledger.stage_counts(stage)
-    return ResearchDossier(
-        perspective=brief.perspective,
-        summary=summary,
-        findings=findings,
-        rejected=rejected,
-        methods_identified=methods,
-        gaps=gaps,
-        ok=True,
-        failure=None,
-        web_searches=searches,
-        web_fetches=fetches,
-        continuations=continuations,
-        iterations=iterations,
-        loop_actions=loop_actions,
-        budget_exhausted=budget_exhausted,
-    )
+    return assemble(capped=stopped_with_pending_work)

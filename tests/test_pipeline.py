@@ -347,3 +347,52 @@ async def test_quality_gate_discloses_unrepaired_violations(monkeypatch):
     assert any("report quality gate" in w for w in result.warnings)
     # The bad citation is still annotated for the reader, never silently kept.
     assert "[F-xx7 — unresolved citation]" in result.report_markdown
+
+
+async def test_hard_timeout_salvages_checkpoint_snapshot(monkeypatch):
+    import asyncio
+    from dataclasses import replace
+
+    import maxim.config as config
+    import maxim.researcher as researcher_mod
+
+    # Shrink the clocks: soft deadline effectively disabled (margin 0 with a
+    # 0.3s budget the fake iteration finishes well inside), and the repair
+    # gather hangs so the wait_for backstop fires.
+    monkeypatch.setitem(
+        config.DEPTHS, "standard", replace(config.DEPTHS["standard"], researcher_timeout_s=0.3)
+    )
+    monkeypatch.setattr(orchestrator, "TIMEOUT_GRACE_S", 0.05)
+    monkeypatch.setattr(researcher_mod, "DEADLINE_MARGIN_S", 0.0)
+
+    holder = _install(monkeypatch)
+    fake = None
+
+    original_run_agentic = FakeLLM.run_agentic
+
+    async def hanging_run_agentic(self, *, stage, **kwargs):
+        if stage == "researcher:statistics" and any(
+            s == "researcher:statistics" for s in self.agentic_stages
+        ):
+            await asyncio.sleep(30)  # second gather (the repair turn) hangs
+        return await original_run_agentic(self, stage=stage, **kwargs)
+
+    monkeypatch.setattr(FakeLLM, "run_agentic", hanging_run_agentic)
+
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    fake = holder["llm"]
+    assert fake is not None
+
+    by_perspective = {d.perspective: d for d in result.dossiers}
+    salvaged = by_perspective["statistics"]
+    # Not a stub: the last completed pass survived the hard cancel.
+    assert salvaged.ok
+    assert len(salvaged.findings) == 3
+    assert all(f.confidence in ("medium", "low") for f in salvaged.findings)
+    assert any("hard timeout" in g for g in salvaged.gaps)
+    assert any("hung past" in w for w in result.warnings)

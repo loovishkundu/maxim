@@ -77,6 +77,7 @@ async def run_pipeline(
                 if ledger.over_budget:
                     warnings.append(f"{brief.perspective}: skipped — budget exhausted")
                     return stub_dossier(brief, "skipped: budget exhausted")
+                checkpoint: dict[str, ResearchDossier] = {}
                 try:
                     dossier = await asyncio.wait_for(
                         run_researcher(
@@ -86,6 +87,7 @@ async def run_pipeline(
                             llm,
                             progress=lambda msg, _l=label: progress(_l, msg),
                             deadline=time.monotonic() + timeout,
+                            checkpoint=checkpoint,
                         ),
                         timeout=timeout + TIMEOUT_GRACE_S,
                     )
@@ -96,13 +98,22 @@ async def run_pipeline(
                     )
                     return dossier
                 except TimeoutError:
-                    # The soft deadline should have salvaged partial results;
-                    # reaching this backstop means a call hung outright.
+                    # The soft deadline should have ended the loop gracefully;
+                    # reaching this backstop means a call hung outright. Use the
+                    # last completed pass's snapshot rather than losing the run.
                     warnings.append(
                         f"{brief.perspective}: hung past {timeout:.0f}s + grace and was "
                         "cancelled — the cancelled call's usage is not counted; real "
                         "spend may exceed the estimate"
                     )
+                    snapshot = checkpoint.get("dossier")
+                    if snapshot is not None:
+                        progress(
+                            label,
+                            f"timed out — salvaged {len(snapshot.findings)} findings "
+                            "from the last completed pass",
+                        )
+                        return snapshot
                     progress(label, "timed out")
                     searches, fetches = ledger.stage_counts(label)
                     return stub_dossier(brief, f"timed out after {timeout:.0f}s", searches, fetches)
