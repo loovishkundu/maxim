@@ -53,7 +53,9 @@ class FakeLLM:
         self.settings = settings
         self.ledger = ledger
         self.fail_perspectives = fail_perspectives
-        self.synth_stop_reason = synth_stop_reason
+        self.synth_stop_reasons = list(
+            synth_stop_reason if isinstance(synth_stop_reason, list) else [synth_stop_reason]
+        )
         self.synth_raises = synth_raises
         self.synth_texts = list(synth_texts) if synth_texts else [GOOD_SYNTH]
         self.synth_calls = 0
@@ -136,7 +138,11 @@ class FakeLLM:
             raise LLMError("synthesizer: API call failed: 529 overloaded")
         self.synth_calls += 1
         text = self.synth_texts.pop(0) if len(self.synth_texts) > 1 else self.synth_texts[0]
-        return StreamResult(text=text, stop_reason=self.synth_stop_reason)
+        if len(self.synth_stop_reasons) > 1:
+            stop_reason = self.synth_stop_reasons.pop(0)
+        else:
+            stop_reason = self.synth_stop_reasons[0]
+        return StreamResult(text=text, stop_reason=stop_reason)
 
 
 def _settings(**kwargs) -> Settings:
@@ -396,3 +402,53 @@ async def test_hard_timeout_salvages_checkpoint_snapshot(monkeypatch):
     assert all(f.confidence in ("medium", "low") for f in salvaged.findings)
     assert any("hard timeout" in g for g in salvaged.gaps)
     assert any("hung past" in w for w in result.warnings)
+
+
+async def test_repair_that_introduces_new_violations_is_rejected(monkeypatch):
+    # The repair has fewer violations by count but invents a NEW bad citation
+    # — count-only comparison would accept it; the subset rule must not.
+    repair_with_new_bug = GOOD_SYNTH + "\nAlso bogus [F-yy8].\n"
+    _install(monkeypatch, synth_texts=[BAD_SYNTH, repair_with_new_bug])
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert result.partial
+    assert "[F-yy8" not in result.report_markdown  # bad repair rejected
+    assert "[F-xx7 — unresolved citation]" in result.report_markdown  # original kept
+
+
+async def test_truncated_repair_never_replaces_complete_draft(monkeypatch):
+    # The repair fixes every violation but hit max_tokens — a truncated body
+    # must not silently replace the complete draft.
+    _install(
+        monkeypatch,
+        synth_texts=[BAD_SYNTH, GOOD_SYNTH],
+        synth_stop_reason=["end_turn", "max_tokens"],
+    )
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert result.partial
+    assert "[F-xx7 — unresolved citation]" in result.report_markdown  # original kept
+
+
+async def test_fallback_report_carries_pulse_and_tiers(monkeypatch):
+    _install(
+        monkeypatch,
+        perspectives=("ai_agentic", "statistics", "community"),
+        synth_raises=True,
+    )
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert "Community Pulse (mechanical aggregates)" in result.report_markdown
+    assert "[tier B]" in result.report_markdown

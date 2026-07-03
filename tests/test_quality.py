@@ -76,3 +76,46 @@ def test_repair_instruction_lists_violations():
     assert "missing section" in text
     assert "row uncited" in text
     assert "never invent ids" in text
+
+
+FILLER = (
+    "STL decomposes the series into trend and seasonality and this "
+    "sentence keeps going to be substantive prose. "
+) * 5
+
+
+def test_bold_led_paragraph_is_still_prose():
+    body = CLEAN + f"\n## Statistics Take\n\n**STL wins.** {FILLER}\n"
+    violations = report_violations(body, KNOWN)
+    assert any("uncited factual paragraph" in v for v in violations)
+
+
+def test_true_list_items_are_not_prose():
+    bullets = "\n".join(f"- {FILLER}" for _ in range(2))
+    body = CLEAN + f"\n## Statistics Take\n\n{bullets}\n"
+    assert report_violations(body, KNOWN) == []
+
+
+def test_fenced_code_blocks_are_opaque():
+    # A '## Caveats' inside a fence must not satisfy the required-section
+    # check, and fence bodies must not be flagged as uncited prose.
+    body = CLEAN.replace("## Caveats\nThin coverage on GPU baselines [F-ai1].\n", "")
+    body += f"\n## Statistics Take\n\n```\n## Caveats\n{FILLER}\n```\n"
+    violations = report_violations(body, KNOWN)
+    assert any("'## Caveats' is missing" in v for v in violations)
+    assert not any("uncited factual paragraph" in v for v in violations)
+
+
+def test_preamble_prose_is_checked():
+    body = f"# Topic\n\n{FILLER}\n\n" + CLEAN.split("\n", 2)[2]
+    violations = report_violations(body, KNOWN)
+    assert any("report preamble" in v for v in violations)
+
+
+def test_duplicate_landscape_sections_both_checked():
+    extra = (
+        "\n## Method Landscape (community)\n"
+        "| Method | Findings |\n|---|---|\n| Prophet | none |\n"
+    )
+    violations = report_violations(CLEAN + extra, KNOWN)
+    assert any("row 'Prophet'" in v for v in violations)

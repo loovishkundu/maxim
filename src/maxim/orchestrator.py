@@ -216,7 +216,14 @@ async def run_pipeline(
                         warnings.append(f"report repair pass failed: {exc}")
                     else:
                         repaired_violations = report_violations(repaired.text, known_ids)
-                        if len(repaired_violations) < len(violations):
+                        # A repair is accepted only when it is complete (not
+                        # truncated) and strictly improves: either clean, or
+                        # fewer violations without introducing new kinds.
+                        improved = not repaired_violations or (
+                            len(repaired_violations) < len(violations)
+                            and set(repaired_violations) <= set(violations)
+                        )
+                        if not repaired.truncated and improved:
                             body = repaired.text
                             violations = repaired_violations
                 if violations:
@@ -240,6 +247,7 @@ async def run_pipeline(
                 ledger.to_run_usage(),
                 warnings,
                 settings.depth,
+                pulse=pulse,
             )
 
         partial = (

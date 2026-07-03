@@ -10,6 +10,7 @@ from .reputation import tier_badge, tier_mix
 from .schemas import (
     PERSPECTIVE_LABELS,
     Finding,
+    MethodPulse,
     ResearchDossier,
     ResearchPlan,
     RunUsage,
@@ -150,6 +151,7 @@ def fallback_report(
     usage: RunUsage,
     warnings: list[str],
     depth: str,
+    pulse: list[MethodPulse] | None = None,
 ) -> str:
     """Zero-LLM raw dump used when synthesis cannot run (budget, no findings,
     or a synthesis-stage failure). States the actual reason and keeps the
@@ -172,7 +174,19 @@ def fallback_report(
                 f"- **{f.method_name}** ({f.confidence}, {_verification_mark(f)}): " f"{f.claim}"
             )
             for ev in f.evidence:
-                lines.append(f"  - {ev.source_title} — <{ev.source_url}>")
+                tier = f" [tier {ev.tier}]" if ev.tier else ""
+                lines.append(f"  - {ev.source_title} — <{ev.source_url}>{tier}")
+        lines.append("")
+    if pulse:
+        lines.append("## Community Pulse (mechanical aggregates)")
+        for entry in pulse:
+            sentiment = "–" if entry.sentiment == "insufficient_data" else entry.sentiment
+            lines.append(
+                f"- **{entry.method}**: {sentiment} (based on {entry.sample_size} thread(s))"
+            )
+            lines.extend(f"  - {thread}" for thread in entry.notable_threads)
+            if entry.how_people_test_it:
+                lines.append("  - how people test it: " + "; ".join(entry.how_people_test_it))
         lines.append("")
     lines.append(_footer(plan, dossiers, usage, warnings, depth))
     return "\n".join(lines)
