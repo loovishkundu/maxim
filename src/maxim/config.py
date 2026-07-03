@@ -40,6 +40,7 @@ class LoopPolicy:
     max_evidence_retries: int
     max_revalidates: int
     max_replans: int
+    max_iterations: int = 3  # total draft→verify→critique passes, replans included
     retry_weak_ratio: float = 0.2  # weak+unsupported share above this → RETRY
     replan_unsupported_ratio: float = 0.5  # unsupported share above this → REPLAN
     revalidate_mechanical_ratio: float = 0.3  # mechanical failures at/below this → RE-VALIDATE
@@ -69,7 +70,13 @@ DEPTHS: dict[str, DepthPreset] = {
         researcher_timeout_s=300.0,
         gather_max_tokens=8_000,
         synthesis_max_tokens=16_000,
-        loop=LoopPolicy(min_findings=2, max_evidence_retries=1, max_revalidates=1, max_replans=0),
+        loop=LoopPolicy(
+            min_findings=2,
+            max_evidence_retries=1,
+            max_revalidates=1,
+            max_replans=0,
+            max_iterations=2,
+        ),
     ),
     "standard": DepthPreset(
         researcher_effort="medium",
@@ -79,7 +86,13 @@ DEPTHS: dict[str, DepthPreset] = {
         researcher_timeout_s=600.0,
         gather_max_tokens=12_000,
         synthesis_max_tokens=24_000,
-        loop=LoopPolicy(min_findings=3, max_evidence_retries=2, max_revalidates=2, max_replans=1),
+        loop=LoopPolicy(
+            min_findings=3,
+            max_evidence_retries=2,
+            max_revalidates=2,
+            max_replans=1,
+            max_iterations=3,
+        ),
     ),
     "deep": DepthPreset(
         researcher_effort="high",
@@ -89,7 +102,13 @@ DEPTHS: dict[str, DepthPreset] = {
         researcher_timeout_s=900.0,
         gather_max_tokens=20_000,
         synthesis_max_tokens=32_000,
-        loop=LoopPolicy(min_findings=4, max_evidence_retries=2, max_revalidates=2, max_replans=1),
+        loop=LoopPolicy(
+            min_findings=4,
+            max_evidence_retries=2,
+            max_revalidates=2,
+            max_replans=1,
+            max_iterations=4,
+        ),
     ),
 }
 

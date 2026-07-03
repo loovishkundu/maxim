@@ -43,38 +43,39 @@ def make_plan(perspectives=("ai_agentic", "statistics")) -> ResearchPlan:
     )
 
 
+def _draft_finding(claim: str, method: str, quote: str = GOOD_QUOTE) -> DraftFinding:
+    return DraftFinding(
+        claim=claim,
+        method_name=method,
+        evidence=[
+            DraftEvidence(
+                quote=quote,
+                source_url=SOURCE_URL,
+                source_title="Anomaly detection at Example Corp",
+                published="2026-01",
+                kind="blog",
+            )
+        ],
+        caveats=[],
+    )
+
+
 def make_draft_dossier() -> DraftDossier:
+    """Three well-grounded findings + one fabricated quote.
+
+    Healthy enough to pass the standard loop gate (min 3 validated) so
+    pipeline tests exercise the single-pass happy path.
+    """
     return DraftDossier(
         summary="STL looks strong; Prophet needs tuning.",
         findings=[
-            DraftFinding(
-                claim="STL catches most injected anomalies on vehicle telemetry.",
-                method_name="STL decomposition",
-                evidence=[
-                    DraftEvidence(
-                        quote=GOOD_QUOTE,
-                        source_url=SOURCE_URL,
-                        source_title="Anomaly detection at Example Corp",
-                        published="2026-01",
-                        kind="blog",
-                    )
-                ],
-                caveats=[],
+            _draft_finding(
+                "STL catches most injected anomalies on vehicle telemetry.",
+                "STL decomposition",
             ),
-            DraftFinding(
-                claim="STL is obsolete for telemetry.",
-                method_name="STL decomposition",
-                evidence=[
-                    DraftEvidence(
-                        quote=FAKE_QUOTE,
-                        source_url=SOURCE_URL,
-                        source_title="Anomaly detection at Example Corp",
-                        published=None,
-                        kind="blog",
-                    )
-                ],
-                caveats=[],
-            ),
+            _draft_finding("STL has a low false-positive rate.", "STL decomposition"),
+            _draft_finding("Prophet needs heavy per-signal tuning.", "Prophet"),
+            _draft_finding("STL is obsolete for telemetry.", "STL decomposition", FAKE_QUOTE),
         ],
         methods_identified=["STL decomposition", "Prophet"],
         gaps=["no GPU benchmarks found"],

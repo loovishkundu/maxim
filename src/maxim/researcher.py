@@ -1,19 +1,36 @@
-"""One researcher agent: GATHER → DRAFT → mechanical VERIFY → CRITIQUE.
+"""One researcher agent: GATHER → (DRAFT → mechanical VERIFY → CRITIQUE) loop.
 
-M1 runs a single pass of each phase (the evidence-retry / re-validate / replan
-loops land in M2); the mechanical verification gate and the fresh-context
-critic are in from day one, so nothing unverified reaches the synthesizer.
+The loop is a bounded state machine routed by `loop.decide()` — pure Python,
+never LLM judgment. Per iteration the critic's verdicts split findings into
+frozen (supported — locked, never re-researched), pending-weak (kept but
+flagged; a later repair pass may supersede them), and rejected. RETRY searches
+better evidence for flagged claims only; RE-VALIDATE re-fetches exact URLs to
+repair broken quotes without new searching. REPLAN is routed here but executed
+by the orchestrator via a fresh conversation.
+
+Timeouts are graceful: the orchestrator passes a soft deadline and the loop
+stops between phases, salvaging every validated finding instead of losing the
+run to a hard cancel.
 """
 
 from __future__ import annotations
 
+import re
+import time
 from collections.abc import Callable
 from typing import Any
 
 from .config import Settings
 from .critic import apply_critique, critique
-from .llm import LLM, dump_for_prompt
-from .prompts import DRAFT_INSTRUCTION, RESEARCHER_SYSTEMS
+from .llm import LLM, CitedQuote, SourceDoc, dump_for_prompt
+from .loop import IterationOutcome, LoopState, decide
+from .prompts import (
+    DRAFT_INSTRUCTION,
+    REPAIR_DRAFT_INSTRUCTION,
+    RESEARCHER_SYSTEMS,
+    RETRY_INSTRUCTION_HEADER,
+    REVALIDATE_INSTRUCTION_HEADER,
+)
 from .reputation import BLOCKED_DOMAINS, stamp_evidence
 from .schemas import (
     PERSPECTIVE_ID_PREFIX,
@@ -26,6 +43,15 @@ from .schemas import (
 )
 from .verification import verify_evidence
 
+# Don't start another repair pass with less than this much wall-clock left —
+# a gather + draft + critique that gets cancelled midway is pure waste.
+DEADLINE_MARGIN_S = 60.0
+# Repair turns are targeted; they never need the full gather continuation budget.
+REPAIR_MAX_CONTINUATIONS = 2
+REPAIR_FETCH_MAX_USES = 4
+
+_ID_NUM = re.compile(r"(\d+)$")
+
 
 def _web_tools(settings: Settings) -> list[dict[str, Any]]:
     preset = settings.preset
@@ -36,15 +62,19 @@ def _web_tools(settings: Settings) -> list[dict[str, Any]]:
             "max_uses": preset.web_search_max_uses,
             "blocked_domains": BLOCKED_DOMAINS,
         },
-        {
-            "type": "web_fetch_20260209",
-            "name": "web_fetch",
-            "max_uses": preset.web_fetch_max_uses,
-            "citations": {"enabled": True},
-            "max_content_tokens": settings.web_fetch_max_content_tokens,
-            "blocked_domains": BLOCKED_DOMAINS,
-        },
+        _fetch_tool(settings, preset.web_fetch_max_uses),
     ]
+
+
+def _fetch_tool(settings: Settings, max_uses: int) -> dict[str, Any]:
+    return {
+        "type": "web_fetch_20260209",
+        "name": "web_fetch",
+        "max_uses": max_uses,
+        "citations": {"enabled": True},
+        "max_content_tokens": settings.web_fetch_max_content_tokens,
+        "blocked_domains": BLOCKED_DOMAINS,
+    }
 
 
 def _gather_message(brief: ResearchBrief, plan: ResearchPlan) -> str:
@@ -58,6 +88,60 @@ def _gather_message(brief: ResearchBrief, plan: ResearchPlan) -> str:
         "Research this now using web_search and web_fetch. Fetch every page you "
         "intend to quote."
     )
+
+
+def _retry_message(
+    weak: list[Finding],
+    critic_rejected: list[RejectedFinding],
+    coverage_gaps: list[str],
+) -> str:
+    lines = [RETRY_INSTRUCTION_HEADER, ""]
+    if weak:
+        lines.append("PARTIALLY SUPPORTED (strengthen the evidence or refine the claim):")
+        for f in weak:
+            hint = next((c for c in f.caveats if c.startswith("critic:")), "")
+            lines.append(f'- [{f.method_name}] "{f.claim}" {hint}'.rstrip())
+    if critic_rejected:
+        lines.append("REJECTED (find evidence that actually carries the claim, or drop it):")
+        for r in critic_rejected:
+            lines.append(f'- [{r.finding.method_name}] "{r.finding.claim}" — {r.reason}')
+    if coverage_gaps:
+        lines.append("UNANSWERED SUB-QUESTIONS:")
+        lines.extend(f"- {gap}" for gap in coverage_gaps)
+    return "\n".join(lines)
+
+
+def _revalidate_message(mech_rejected: list[RejectedFinding]) -> str:
+    lines = [REVALIDATE_INSTRUCTION_HEADER, ""]
+    for r in mech_rejected:
+        for ev in r.finding.evidence:
+            if ev.status == "failed":
+                lines.append(f'- "{ev.quote}"\n  claimed from: {ev.source_url}')
+    return "\n".join(lines)
+
+
+def _repair_draft_instruction(frozen: list[Finding]) -> str:
+    claims = "\n".join(f'- [{f.method_name}] "{f.claim}"' for f in frozen) or "- (none yet)"
+    return REPAIR_DRAFT_INSTRUCTION.format(frozen_claims=claims)
+
+
+def _merge_unique(base: list[str], extra: list[str]) -> list[str]:
+    seen = {item.casefold() for item in base}
+    merged = list(base)
+    for item in extra:
+        if item.casefold() not in seen:
+            seen.add(item.casefold())
+            merged.append(item)
+    return merged
+
+
+def _norm_claim(claim: str) -> str:
+    return " ".join(claim.split()).casefold()
+
+
+def _id_ordinal(finding: Finding) -> int:
+    match = _ID_NUM.search(finding.id)
+    return int(match.group(1)) if match else 0
 
 
 def stub_dossier(
@@ -81,54 +165,29 @@ def stub_dossier(
     )
 
 
-async def run_researcher(
+def _mechanical_gate(
+    draft: DraftDossier,
     brief: ResearchBrief,
     plan: ResearchPlan,
-    settings: Settings,
-    llm: LLM,
-    progress: Callable[[str], None],
-) -> ResearchDossier:
-    preset = settings.preset
-    stage = f"researcher:{brief.perspective}"
-    system = RESEARCHER_SYSTEMS[brief.perspective]
-
-    progress("searching…")
-    gathered = await llm.run_agentic(
-        stage=stage,
-        system=system,
-        messages=[{"role": "user", "content": _gather_message(brief, plan)}],
-        tools=_web_tools(settings),
-        model=settings.researcher_model,
-        effort=preset.researcher_effort,
-        max_tokens=preset.gather_max_tokens,
-        max_continuations=preset.max_continuations,
-        on_progress=progress,
-    )
-
-    progress("extracting findings…")
-    draft: DraftDossier = await llm.parse(
-        stage=stage,
-        system=system,
-        messages=gathered.messages + [{"role": "user", "content": DRAFT_INSTRUCTION}],
-        output_format=DraftDossier,
-        model=settings.researcher_model,
-        effort=preset.researcher_effort,
-    )
-
+    source_cache: dict[str, SourceDoc],
+    cited_quotes: list[CitedQuote],
+    next_id: int,
+) -> tuple[list[Finding], list[RejectedFinding], int]:
+    """Verify + stamp every draft finding; reject provable fabrications."""
     prefix = PERSPECTIVE_ID_PREFIX[brief.perspective]
     survivors: list[Finding] = []
     rejected: list[RejectedFinding] = []
-    for n, draft_finding in enumerate(draft.findings, 1):
+    for draft_finding in draft.findings:
         evidence = [
             stamp_evidence(
-                verify_evidence(ev, gathered.source_cache, gathered.cited_quotes),
+                verify_evidence(ev, source_cache, cited_quotes),
                 brief.perspective,
                 plan.recency_horizon_months,
             )
             for ev in draft_finding.evidence
         ]
         finding = Finding(
-            id=f"F-{prefix}{n}",
+            id=f"F-{prefix}{next_id}",
             perspective=brief.perspective,
             claim=draft_finding.claim,
             method_name=draft_finding.method_name,
@@ -137,6 +196,7 @@ async def run_researcher(
             verdict=None,
             caveats=draft_finding.caveats,
         )
+        next_id += 1
         statuses = {ev.status for ev in evidence}
         if not evidence:
             # Belt and suspenders with the schema's min_length: a claim with no
@@ -155,41 +215,214 @@ async def run_researcher(
             )
         else:
             survivors.append(finding)
+    return survivors, rejected, next_id
 
-    validated: list[Finding] = []
+
+def _cap_confidence(findings: list[Finding], note: str) -> list[Finding]:
+    """Exhaustion cap: work was still pending, so nothing keeps 'high'."""
+    capped = []
+    for f in findings:
+        if f.confidence == "high":
+            capped.append(
+                f.model_copy(update={"confidence": "medium", "caveats": f.caveats + [note]})
+            )
+        else:
+            capped.append(f)
+    return capped
+
+
+async def run_researcher(
+    brief: ResearchBrief,
+    plan: ResearchPlan,
+    settings: Settings,
+    llm: LLM,
+    progress: Callable[[str], None],
+    deadline: float | None = None,
+) -> ResearchDossier:
+    preset = settings.preset
+    policy = preset.loop
+    stage = f"researcher:{brief.perspective}"
+    system = RESEARCHER_SYSTEMS[brief.perspective]
+
+    source_cache: dict[str, SourceDoc] = {}
+    cited_quotes: list[CitedQuote] = []
+
+    progress("searching…")
+    gathered = await llm.run_agentic(
+        stage=stage,
+        system=system,
+        messages=[{"role": "user", "content": _gather_message(brief, plan)}],
+        tools=_web_tools(settings),
+        model=settings.researcher_model,
+        effort=preset.researcher_effort,
+        max_tokens=preset.gather_max_tokens,
+        max_continuations=preset.max_continuations,
+        on_progress=progress,
+    )
+    transcript = gathered.messages
+    source_cache.update(gathered.source_cache)
+    cited_quotes.extend(gathered.cited_quotes)
+    truncated_gather = gathered.truncated
+    continuations = gathered.continuations
+
+    state = LoopState()
+    loop_actions: list[str] = []
+    iterations = 0
+    budget_exhausted = False
+    stop_notes: list[str] = []
+    stopped_with_pending_work = False
+
+    frozen: list[Finding] = []  # verdict == supported: locked in
+    pending_weak: list[Finding] = []  # partially_supported: kept, repairable
+    rejected: list[RejectedFinding] = []
     coverage_gaps: list[str] = []
-    if survivors:
-        progress(f"critiquing {len(survivors)} findings…")
-        result = await critique(
-            stage=f"critic:{brief.perspective}",
-            brief=brief,
-            findings=survivors,
-            source_cache=gathered.source_cache,
-            settings=settings,
-            llm=llm,
-        )
-        validated, critic_rejected = apply_critique(survivors, result)
-        rejected.extend(critic_rejected)
-        coverage_gaps = result.coverage_gaps
+    summary = ""
+    methods: list[str] = []
+    draft_gaps: list[str] = []
+    next_id = 1
+    draft_instruction = DRAFT_INSTRUCTION
 
-    gaps = draft.gaps + coverage_gaps
-    if gathered.truncated:
+    while True:
+        iterations += 1
+        progress(f"extracting findings (pass {iterations})…")
+        draft: DraftDossier = await llm.parse(
+            stage=stage,
+            system=system,
+            messages=transcript + [{"role": "user", "content": draft_instruction}],
+            output_format=DraftDossier,
+            model=settings.researcher_model,
+            effort=preset.researcher_effort,
+        )
+        if draft.summary:
+            summary = draft.summary
+        methods = _merge_unique(methods, draft.methods_identified)
+        draft_gaps = _merge_unique(draft_gaps, draft.gaps)
+
+        survivors, mech_rejected, next_id = _mechanical_gate(
+            draft, brief, plan, source_cache, cited_quotes, next_id
+        )
+        rejected.extend(mech_rejected)
+
+        new_validated: list[Finding] = []
+        critic_rejected: list[RejectedFinding] = []
+        if survivors:
+            progress(f"critiquing {len(survivors)} findings…")
+            result = await critique(
+                stage=f"critic:{brief.perspective}",
+                brief=brief,
+                findings=survivors,
+                source_cache=source_cache,
+                settings=settings,
+                llm=llm,
+            )
+            new_validated, critic_rejected = apply_critique(survivors, result)
+            coverage_gaps = result.coverage_gaps
+        rejected.extend(critic_rejected)
+
+        new_supported = [f for f in new_validated if f.verdict == "supported"]
+        new_weak = [f for f in new_validated if f.verdict != "supported"]
+        # A repaired claim supersedes the weak version it replaces (same
+        # method) — even a still-weak repair, else re-drafts would pile up
+        # near-duplicate findings across iterations.
+        superseded = {f.method_name.casefold() for f in new_validated}
+        pending_weak = [f for f in pending_weak if f.method_name.casefold() not in superseded]
+        frozen.extend(new_supported)
+        pending_weak.extend(new_weak)
+        # A claim that later validated no longer belongs in the rejected list.
+        validated_claims = {_norm_claim(f.claim) for f in frozen + pending_weak}
+        rejected = [r for r in rejected if _norm_claim(r.finding.claim) not in validated_claims]
+
+        outcome = IterationOutcome(
+            drafted=len(draft.findings),
+            validated=len(frozen) + len(pending_weak),
+            weak=len(new_weak),
+            unsupported=len(critic_rejected),
+            mechanical_failed=len(mech_rejected),
+            coverage_gaps=len(coverage_gaps),
+        )
+        decision = decide(outcome, state, policy)
+        if decision.action == "accept":
+            break
+        if iterations >= policy.max_iterations:
+            stop_notes.append(
+                f"loop stopped at max_iterations={policy.max_iterations} "
+                f"(pending action: {decision.action})"
+            )
+            stopped_with_pending_work = True
+            break
+        if llm.ledger.over_budget:
+            budget_exhausted = True
+            stop_notes.append("loop stopped: cost budget exhausted — partial results kept")
+            stopped_with_pending_work = True
+            break
+        if deadline is not None and time.monotonic() >= deadline - DEADLINE_MARGIN_S:
+            stop_notes.append("loop stopped: wall-clock deadline reached — partial results kept")
+            stopped_with_pending_work = True
+            break
+        if decision.action == "replan":
+            # Executed by the orchestrator with a fresh conversation (M2, next
+            # slice); until wired, the structural weakness is recorded honestly.
+            stop_notes.append("structural weakness: " + "; ".join(decision.reasons))
+            stopped_with_pending_work = True
+            break
+
+        state = state.spend(decision.action)
+        loop_actions.append(decision.action)
+        if decision.action == "retry":
+            progress("retrying weak claims with critic hints…")
+            message = _retry_message(pending_weak, critic_rejected, coverage_gaps)
+            tools = _web_tools(settings)
+            max_continuations = preset.max_continuations
+        else:  # revalidate
+            progress("re-fetching sources to repair broken quotes…")
+            message = _revalidate_message(mech_rejected)
+            tools = [_fetch_tool(settings, REPAIR_FETCH_MAX_USES)]
+            max_continuations = REPAIR_MAX_CONTINUATIONS
+        gathered = await llm.run_agentic(
+            stage=stage,
+            system=system,
+            messages=transcript + [{"role": "user", "content": message}],
+            tools=tools,
+            model=settings.researcher_model,
+            effort=preset.researcher_effort,
+            max_tokens=preset.gather_max_tokens,
+            max_continuations=max_continuations,
+            on_progress=progress,
+        )
+        transcript = gathered.messages
+        source_cache.update(gathered.source_cache)
+        cited_quotes.extend(gathered.cited_quotes)
+        continuations += gathered.continuations
+        draft_instruction = _repair_draft_instruction(frozen)
+
+    findings = sorted(frozen + pending_weak, key=_id_ordinal)
+    if stopped_with_pending_work:
+        findings = _cap_confidence(
+            findings, "run ended with repair work pending — confidence capped"
+        )
+
+    gaps = _merge_unique(draft_gaps, coverage_gaps)
+    if truncated_gather:
         gaps.append(
             "research gather stopped early (continuation/token/budget cap) — "
             "coverage may be incomplete"
         )
+    gaps.extend(stop_notes)
 
     searches, fetches = llm.ledger.stage_counts(stage)
     return ResearchDossier(
         perspective=brief.perspective,
-        summary=draft.summary,
-        findings=validated,
+        summary=summary,
+        findings=findings,
         rejected=rejected,
-        methods_identified=draft.methods_identified,
+        methods_identified=methods,
         gaps=gaps,
         ok=True,
         failure=None,
         web_searches=searches,
         web_fetches=fetches,
-        continuations=gathered.continuations,
+        continuations=continuations,
+        iterations=iterations,
+        loop_actions=loop_actions,
+        budget_exhausted=budget_exhausted,
     )

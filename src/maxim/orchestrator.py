@@ -8,6 +8,7 @@ and MCP wrapper cheap.
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Callable
 
 from .config import Settings
@@ -21,6 +22,10 @@ from .usage import UsageLedger
 
 ProgressFn = Callable[[str, str], None]
 ConfirmFn = Callable[[ResearchPlan], bool]
+
+# Researchers self-terminate at a soft deadline and salvage partial findings;
+# the hard wait_for backstop only fires if one hangs past the grace window.
+TIMEOUT_GRACE_S = 60.0
 
 
 class PlanRejected(Exception):
@@ -65,8 +70,9 @@ async def run_pipeline(
                             settings,
                             llm,
                             progress=lambda msg, _l=label: progress(_l, msg),
+                            deadline=time.monotonic() + timeout,
                         ),
-                        timeout=timeout,
+                        timeout=timeout + TIMEOUT_GRACE_S,
                     )
                     progress(
                         label,
@@ -75,10 +81,12 @@ async def run_pipeline(
                     )
                     return dossier
                 except TimeoutError:
+                    # The soft deadline should have salvaged partial results;
+                    # reaching this backstop means a call hung outright.
                     warnings.append(
-                        f"{brief.perspective}: timed out after {timeout:.0f}s — the "
-                        "cancelled call's usage is not counted; real spend may exceed "
-                        "the estimate"
+                        f"{brief.perspective}: hung past {timeout:.0f}s + grace and was "
+                        "cancelled — the cancelled call's usage is not counted; real "
+                        "spend may exceed the estimate"
                     )
                     progress(label, "timed out")
                     searches, fetches = ledger.stage_counts(label)

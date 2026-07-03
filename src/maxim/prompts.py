@@ -102,6 +102,34 @@ else null.
 sub-questions in gaps.
 - Quality over quantity: 5-10 solid findings beat 20 weak ones."""
 
+RETRY_INSTRUCTION_HEADER = """\
+The grounding critic reviewed your findings. Some need stronger evidence. For each item \
+below, search for and FETCH a better source, then capture a verbatim quote that actually \
+carries the claim — or refine the claim to what the evidence supports, or drop it. Work \
+ONLY on the items listed here and the unanswered sub-questions; already-validated claims \
+are locked and must not be re-researched."""
+
+REVALIDATE_INSTRUCTION_HEADER = """\
+Mechanical verification could not find these quotes in the fetched text of the pages they \
+cite. That usually means the quote was mis-copied or attributed to the wrong URL. Re-fetch \
+the exact URLs with web_fetch and copy the quote VERBATIM from the page text, or re-attribute \
+the quote to the correct page you already fetched. Do NOT run new searches and do NOT add \
+new claims."""
+
+REPAIR_DRAFT_INSTRUCTION = """\
+Stop searching. Produce the structured dossier for THIS REPAIR PASS only.
+
+Requirements:
+- Include ONLY the repaired findings and any genuinely new findings from this pass. Do not \
+repeat already-validated claims (they are locked in and listed below).
+- Every quote must be VERBATIM text copied exactly from a page fetched in this conversation \
+(or exact cited text returned by search). No paraphrasing, no stitching, no fixing typos.
+- `published` is the source's publication date if you saw one, else null.
+- If a claim could not be repaired, drop it rather than re-submitting weak evidence.
+
+Already-validated claims (do NOT repeat):
+{frozen_claims}"""
+
 CRITIC_SYSTEM = """\
 You are the grounding critic inside Maxim. You receive research findings — each a \
 claim plus its evidence quotes and, where available, an excerpt of the actual fetched \

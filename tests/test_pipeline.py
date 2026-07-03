@@ -33,6 +33,7 @@ class FakeLLM:
         self.fail_perspectives = fail_perspectives
         self.synth_stop_reason = synth_stop_reason
         self.synth_raises = synth_raises
+        self.draft_calls: dict[str, int] = {}
 
     async def close(self):
         pass
@@ -43,12 +44,20 @@ class FakeLLM:
         if output_format is ResearchPlan:
             return make_plan()
         if output_format is DraftDossier:
-            return make_draft_dossier()
+            # First pass drafts 3 good findings + 1 fabricated quote. The loop
+            # then RE-VALIDATEs; the repair pass legitimately drops the broken
+            # claim (empty repair dossier) and the loop accepts.
+            self.draft_calls[stage] = self.draft_calls.get(stage, 0) + 1
+            if self.draft_calls[stage] == 1:
+                return make_draft_dossier()
+            return DraftDossier(summary="", findings=[], methods_identified=[], gaps=[])
         if output_format is CritiqueResult:
+            # The fabricated finding (drafted 4th) never reaches the critic;
+            # survivors keep ids 1-3 in both perspectives.
             return CritiqueResult(
                 verdicts=[
-                    ClaimVerdict(finding_id="F-ai1", verdict="supported", fix_hint=None),
-                    ClaimVerdict(finding_id="F-st1", verdict="supported", fix_hint=None),
+                    ClaimVerdict(finding_id=fid, verdict="supported", fix_hint=None)
+                    for fid in ("F-ai1", "F-ai2", "F-ai3", "F-st1", "F-st2", "F-st3")
                 ],
                 coverage_gaps=["maturity question unanswered"],
             )
@@ -115,14 +124,18 @@ async def test_happy_path(monkeypatch):
     assert len(result.dossiers) == 2
     for dossier in result.dossiers:
         assert dossier.ok
-        # good finding validated, fabricated finding mechanically rejected
-        assert len(dossier.findings) == 1
-        assert dossier.findings[0].verdict == "supported"
-        assert dossier.findings[0].confidence == "high"
-        assert dossier.findings[0].evidence[0].status == "verified"
+        # good findings validated, fabricated finding mechanically rejected
+        assert len(dossier.findings) == 3
+        assert all(f.verdict == "supported" for f in dossier.findings)
+        assert all(f.confidence == "high" for f in dossier.findings)
+        assert all(ev.status == "verified" for f in dossier.findings for ev in f.evidence)
         assert len(dossier.rejected) == 1
         assert "mechanical" in dossier.rejected[0].reason
         assert "maturity question unanswered" in dossier.gaps
+        # The fabricated quote triggered one RE-VALIDATE repair pass; the
+        # repair legitimately dropped the claim and the loop accepted.
+        assert dossier.iterations == 2
+        assert dossier.loop_actions == ["revalidate"]
 
     assert "[F-ai1]" in result.report_markdown
     assert "[F-xx7 — unresolved citation]" in result.report_markdown
