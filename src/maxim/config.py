@@ -45,6 +45,9 @@ class LoopPolicy:
     replan_unsupported_ratio: float = 0.5  # unsupported share above this → REPLAN
     revalidate_mechanical_ratio: float = 0.3  # mechanical failures at/below this → RE-VALIDATE
     replan_coverage_gaps: int = 2  # gaps at/above this → REPLAN
+    # Tier collapse: share of validated findings with a verified tier-A/B
+    # source below this → REPLAN (0 disables the gate).
+    replan_tier_ab_floor: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -92,6 +95,7 @@ DEPTHS: dict[str, DepthPreset] = {
             max_revalidates=2,
             max_replans=1,
             max_iterations=3,
+            replan_tier_ab_floor=0.2,
         ),
     ),
     "deep": DepthPreset(
@@ -108,6 +112,7 @@ DEPTHS: dict[str, DepthPreset] = {
             max_revalidates=2,
             max_replans=1,
             max_iterations=4,
+            replan_tier_ab_floor=0.25,
         ),
     ),
 }

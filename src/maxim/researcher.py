@@ -452,13 +452,19 @@ async def run_researcher(
                 extra_notes=("hard timeout: salvaged from the last completed pass",),
             )
 
+        validated_so_far = frozen + pending_weak
         outcome = IterationOutcome(
             drafted=len(draft.findings),
-            validated=len(frozen) + len(pending_weak),
+            validated=len(validated_so_far),
             weak=len(new_weak),
             unsupported=len(critic_rejected),
             mechanical_failed=len(mech_rejected),
             coverage_gaps=len(coverage_gaps),
+            tier_ab=sum(
+                1
+                for f in validated_so_far
+                if any(ev.status == "verified" and ev.tier in ("A", "B") for ev in f.evidence)
+            ),
         )
         decision = decide(outcome, state, policy)
         if decision.action == "accept":

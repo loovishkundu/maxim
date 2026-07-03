@@ -52,6 +52,8 @@ class IterationOutcome:
     unsupported: int
     mechanical_failed: int
     coverage_gaps: int
+    # Validated findings backed by a verified tier-A/B source (tier collapse).
+    tier_ab: int = 0
 
 
 @dataclass(frozen=True)
@@ -85,6 +87,13 @@ def decide(outcome: IterationOutcome, state: LoopState, policy: LoopPolicy) -> D
         structural.append(f"{unsupported_ratio:.0%} of drafted claims unsupported")
     if outcome.coverage_gaps >= policy.replan_coverage_gaps:
         structural.append(f"{outcome.coverage_gaps} coverage gaps against the brief")
+    if policy.replan_tier_ab_floor > 0 and outcome.validated > 0:
+        tier_share = outcome.tier_ab / outcome.validated
+        if tier_share < policy.replan_tier_ab_floor:
+            structural.append(
+                f"tier collapse: only {tier_share:.0%} of validated findings carry a "
+                "verified tier-A/B source"
+            )
 
     if structural:
         if state.replans < policy.max_replans:

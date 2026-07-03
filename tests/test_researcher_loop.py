@@ -563,3 +563,32 @@ async def test_checkpoint_snapshot_written_each_pass():
     assert len(snapshot.findings) == 5  # last completed pass
     assert all(f.confidence in ("medium", "low") for f in snapshot.findings)
     assert any("hard timeout" in g for g in snapshot.gaps)
+
+
+TIER_C_URL = "https://randomblog.dev/post"
+
+
+async def test_tier_collapse_routes_to_replan():
+    # All findings validate but only from tier-C sources — PLAN §5's tier
+    # collapse trigger must fire a REPLAN toward reputable sources.
+    class TierCLLM(ScriptedLLM):
+        async def run_agentic(self, *, messages, tools, **kwargs):
+            result = await super().run_agentic(messages=messages, tools=tools, **kwargs)
+            result.source_cache[TIER_C_URL] = SourceDoc(url=TIER_C_URL, text=PAGE_TEXT)
+            return result
+
+    draft1 = dd([df(f"claim {i}", f"m{i}", url=TIER_C_URL) for i in range(1, 5)])
+    critique1 = cr([(f"F-ai{i}", "supported", None) for i in range(1, 5)])
+    draft2 = dd([df("claim 5", "m5", quote=REPAIR_QUOTE, url=REPAIR_URL)])
+    critique2 = cr([("F-ai5", "supported", None)])
+    llm = TierCLLM(
+        drafts=[draft1, draft2],
+        critiques=[critique1, critique2],
+        briefs=[_revised_brief()],
+    )
+
+    dossier = await _run(llm)
+
+    assert "replan" in dossier.loop_actions
+    replan_parse = next(c for c in llm.parse_calls if c["output_format"] is ResearchBrief)
+    assert "tier collapse" in replan_parse["messages"][0]["content"]

@@ -167,3 +167,31 @@ def test_depth_presets_carry_loop_policies():
 def test_decision_is_a_value_object():
     assert Decision("accept").action == "accept"
     assert Decision("accept").reasons == []
+
+
+class TestTierCollapse:
+    FLOOR = LoopPolicy(
+        min_findings=3,
+        max_evidence_retries=2,
+        max_revalidates=2,
+        max_replans=1,
+        replan_tier_ab_floor=0.2,
+    )
+
+    def test_tier_collapse_triggers_replan(self):
+        # 8 validated findings but none on a reputable source: structural.
+        decision = decide(outcome(tier_ab=0), LoopState(), self.FLOOR)
+        assert decision.action == "replan"
+        assert any("tier collapse" in r for r in decision.reasons)
+
+    def test_healthy_tier_mix_accepts(self):
+        decision = decide(outcome(tier_ab=4), LoopState(), self.FLOOR)
+        assert decision.action == "accept"
+
+    def test_floor_zero_disables_the_gate(self):
+        assert decide(outcome(tier_ab=0), LoopState(), POLICY).action == "accept"
+
+    def test_depth_presets(self):
+        assert DEPTHS["quick"].loop.replan_tier_ab_floor == 0.0
+        assert DEPTHS["standard"].loop.replan_tier_ab_floor == 0.2
+        assert DEPTHS["deep"].loop.replan_tier_ab_floor == 0.25
