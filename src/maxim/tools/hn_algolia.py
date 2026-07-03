@@ -55,7 +55,7 @@ async def _search(tool_input: dict[str, Any]) -> ToolOutcome:
         lines.append(entry)
 
         sources.append(SourceDoc(url=item_url, text=f"{title}\n{story_text}".strip()))
-        stats = EngagementStats(source="hn", points=points, comments=comments)
+        stats = EngagementStats(source="hn", points=points, comments=comments, thread_id=item_url)
         engagement[item_url] = stats
         if hit.get("url"):
             engagement[str(hit["url"])] = stats

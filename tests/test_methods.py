@@ -76,3 +76,26 @@ def test_apply_canonical_names_rewrites_findings():
 def test_apply_canonical_names_empty_mapping_is_identity():
     dossier = make_dossier()
     assert apply_canonical_names(dossier, {}) is dossier
+
+
+async def test_lookup_normalizes_whitespace_like_the_mapping_keys():
+    # The model returned a whitespace-mangled variant; mapping keys and
+    # lookups must normalize identically or the variant silently misses.
+    llm = FakeCanonLLM(
+        groups=[
+            MethodGroup(canonical="XGBoost", variants=["gradient  boosted\ttrees", "XGBoost"]),
+        ]
+    )
+    mapping = await canonicalize_methods(["gradient boosted trees", "XGBoost"], Settings(), llm)
+    assert mapping["gradient boosted trees"] == "XGBoost"
+
+    dossier = make_dossier()
+    mangled = dossier.model_copy(
+        update={
+            "findings": [
+                dossier.findings[0].model_copy(update={"method_name": "Gradient  Boosted Trees"})
+            ]
+        }
+    )
+    rewritten = apply_canonical_names(mangled, mapping)
+    assert rewritten.findings[0].method_name == "XGBoost"

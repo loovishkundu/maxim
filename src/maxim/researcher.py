@@ -47,7 +47,7 @@ from .schemas import (
     ResearchDossier,
     ResearchPlan,
 )
-from .sentiment import apply_sentiment_rigor
+from .sentiment import apply_sentiment_rigor, normalize_url
 from .tools import client_tools_for
 from .verification import verify_evidence
 
@@ -218,13 +218,16 @@ def _mechanical_gate(
     prefix = PERSPECTIVE_ID_PREFIX[brief.perspective]
     survivors: list[Finding] = []
     rejected: list[RejectedFinding] = []
+    # Tool keys and model-cited URLs can differ in trailing slash / case /
+    # fragment; floors must not be silently bypassed by spelling drift.
+    engagement_by_url = {normalize_url(url): stats for url, stats in engagement.items()}
     for draft_finding in draft.findings:
         evidence = [
             stamp_evidence(
                 verify_evidence(ev, source_cache, cited_quotes),
                 brief.perspective,
                 plan.recency_horizon_months,
-            ).model_copy(update={"engagement": engagement.get(ev.source_url)})
+            ).model_copy(update={"engagement": engagement_by_url.get(normalize_url(ev.source_url))})
             for ev in draft_finding.evidence
         ]
         finding = Finding(

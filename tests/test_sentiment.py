@@ -165,3 +165,57 @@ class TestPulse:
 
     def test_no_community_findings_no_pulse(self):
         assert build_pulse([make_finding("F-ai1")]) == []
+
+
+class TestThreadIdentity:
+    def test_hn_item_and_article_urls_count_as_one_thread(self):
+        # Same HN discussion registered under two URLs — corroboration must
+        # not be satisfied by one thread talking to itself.
+        stats = EngagementStats(
+            source="hn",
+            points=100,
+            comments=50,
+            thread_id="https://news.ycombinator.com/item?id=101",
+        )
+        finding = community_finding(
+            "F-cm1",
+            [
+                ev("https://news.ycombinator.com/item?id=101", engagement=stats),
+                ev("https://blog.example.com/stl", engagement=stats),
+            ],
+        )
+        (out,) = apply_sentiment_rigor([finding])
+        assert out.sentiment_sample_size == 1
+        assert out.sentiment is None  # demoted: one thread, not two
+
+    def test_url_spelling_drift_counts_as_one_thread(self):
+        finding = community_finding(
+            "F-cm1",
+            [ev("https://a.test/thread/"), ev("HTTPS://A.TEST/thread#comment-3")],
+        )
+        (out,) = apply_sentiment_rigor([finding])
+        assert out.sentiment_sample_size == 1
+
+    def test_pulse_threads_deduped_by_identity(self):
+        stats = EngagementStats(source="hn", points=100, thread_id="hn:101")
+        findings = apply_sentiment_rigor(
+            [
+                community_finding(
+                    "F-cm1",
+                    [
+                        ev("https://a.test/1", engagement=stats),
+                        ev("https://b.test/2", engagement=stats),
+                    ],
+                )
+            ]
+        )
+        (pulse,) = build_pulse(findings)
+        assert pulse.sample_size == 1
+
+
+def test_normalize_url():
+    from maxim.sentiment import normalize_url
+
+    assert normalize_url("HTTPS://Example.COM/Path/") == "https://example.com/Path"
+    assert normalize_url("https://a.test/x#frag") == "https://a.test/x"
+    assert normalize_url("https://a.test/x?q=1") == "https://a.test/x?q=1"

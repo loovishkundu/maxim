@@ -18,14 +18,20 @@ from .prompts import CANONICALIZER_SYSTEM
 from .schemas import CanonicalMethods, ResearchDossier
 
 
+def _key(name: str) -> str:
+    """Canonical lookup key: whitespace-collapsed + casefolded. Mapping keys
+    and lookups must use the same normalization or variants silently miss."""
+    return " ".join(name.split()).casefold()
+
+
 def _dedupe_normalized(methods: list[str]) -> list[str]:
-    """Order-preserving dedupe on casefolded names, keeping the first spelling."""
+    """Order-preserving dedupe on normalized names, keeping the first spelling."""
     seen: set[str] = set()
     unique: list[str] = []
     for method in methods:
         name = " ".join(method.split())
-        if name and name.casefold() not in seen:
-            seen.add(name.casefold())
+        if name and _key(name) not in seen:
+            seen.add(_key(name))
             unique.append(name)
     return unique
 
@@ -37,7 +43,7 @@ async def canonicalize_methods(
 ) -> dict[str, str]:
     """Map every method name (casefolded) to its canonical spelling."""
     unique = _dedupe_normalized(methods)
-    identity = {name.casefold(): name for name in unique}
+    identity = {_key(name): name for name in unique}
     if len(unique) <= 1 or llm.ledger.over_budget:
         return identity
 
@@ -59,7 +65,7 @@ async def canonicalize_methods(
         if not canonical:
             continue
         for variant in group.variants:
-            mapping[variant.casefold()] = canonical
+            mapping[_key(variant)] = canonical
     return mapping
 
 
@@ -68,10 +74,10 @@ def apply_canonical_names(dossier: ResearchDossier, mapping: dict[str, str]) -> 
     if not mapping:
         return dossier
     findings = [
-        f.model_copy(update={"method_name": mapping.get(f.method_name.casefold(), f.method_name)})
+        f.model_copy(update={"method_name": mapping.get(_key(f.method_name), f.method_name)})
         for f in dossier.findings
     ]
-    methods = _dedupe_normalized([mapping.get(m.casefold(), m) for m in dossier.methods_identified])
+    methods = _dedupe_normalized([mapping.get(_key(m), m) for m in dossier.methods_identified])
     return dossier.model_copy(update={"findings": findings, "methods_identified": methods})
 
 

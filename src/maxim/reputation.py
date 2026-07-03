@@ -136,7 +136,7 @@ def classify_source(url: str, kind: EvidenceKind) -> Tier:
         return "A"
     if _in(host, _TIER_B):
         return "B"
-    if host.startswith("github.com") or host == "github.com":
+    if _in(host, {"github.com"}):
         # Repos/issues: community signal, not authority.
         return "D" if kind in ("anecdote", "production_report") else "C"
     if kind == "paper":
@@ -157,6 +157,13 @@ def parse_published(raw: str | None) -> dt.date | None:
     if not raw:
         return None
     text = raw.strip()
+    if "T" in text:
+        # ISO-8601 timestamps ("2026-01-15T00:00:00Z") must not fall through
+        # to the bare-year fallback, which would snap them to July 1.
+        try:
+            return dt.date.fromisoformat(text[:10])
+        except ValueError:
+            pass
     for fmt in _DATE_FORMATS:
         try:
             return dt.datetime.strptime(text, fmt).date()

@@ -133,6 +133,10 @@ class EngagementStats(StrictModel):
     points: int | None = None
     comments: int | None = None
     reactions: int | None = None
+    # Identity of the underlying discussion. An HN story registers the same
+    # stats under its item URL AND its external link — without this id, one
+    # thread would count as two "distinct" corroborating threads.
+    thread_id: str | None = None
 
 
 class Evidence(StrictModel):

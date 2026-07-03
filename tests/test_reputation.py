@@ -140,3 +140,16 @@ def test_blocked_domains_wired_into_tools():
 
     for tool in _web_tools(Settings()):
         assert tool["blocked_domains"] == BLOCKED_DOMAINS
+
+
+class TestReviewRegressions:
+    def test_github_lookalike_domains_not_matched(self):
+        # host.startswith("github.com") used to match unrelated registrable
+        # domains; suffix matching also has to catch real subdomains.
+        assert classify_source("https://gist.github.com/u/1", "docs") == "C"
+        assert classify_source("https://github.community/t/1", "anecdote") == "D"  # kind fallback
+        assert classify_source("https://github.comfoo.io/x", "blog") == "C"  # not github
+
+    def test_iso_timestamp_parses_exact_date(self):
+        assert parse_published("2026-01-15T00:00:00Z") == dt.date(2026, 1, 15)
+        assert parse_published("2026-01-15T09:30:00+02:00") == dt.date(2026, 1, 15)

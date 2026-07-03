@@ -63,7 +63,7 @@ async def _search(tool_input: dict[str, Any]) -> ToolOutcome:
         if url:
             sources.append(SourceDoc(url=url, text=f"{title}\n{item.get('body') or ''}".strip()))
             engagement[url] = EngagementStats(
-                source="github", comments=comments, reactions=reactions
+                source="github", comments=comments, reactions=reactions, thread_id=url
             )
     return ToolOutcome(content="\n".join(lines), sources=sources, engagement=engagement)
 

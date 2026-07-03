@@ -16,6 +16,8 @@ HN/Reddit/GitHub are noisy, so community findings clear extra bars:
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit, urlunsplit
+
 from .schemas import EngagementStats, Finding, MethodPulse, Sentiment
 
 # Floors per source (PLAN §6). Below → the thread doesn't corroborate.
@@ -44,11 +46,38 @@ def meets_floor(stats: EngagementStats | None) -> bool:
     return True
 
 
+def normalize_url(url: str) -> str:
+    """Casefold scheme/host, drop fragments and trailing slashes.
+
+    Tool engagement keys and model-cited source URLs must meet on the same
+    spelling, or floors silently stop applying."""
+    parts = urlsplit(url.strip())
+    return urlunsplit(
+        (
+            parts.scheme.casefold(),
+            parts.netloc.casefold(),
+            parts.path.rstrip("/"),
+            parts.query,
+            "",
+        )
+    )
+
+
+def _thread_key(ev) -> str:
+    """Identity of the underlying discussion for corroboration counting.
+
+    An HN story's item URL and external link share one thread_id — the same
+    conversation must never corroborate itself as two 'distinct' threads."""
+    if ev.engagement is not None and ev.engagement.thread_id:
+        return ev.engagement.thread_id
+    return normalize_url(ev.source_url)
+
+
 def _qualifying_threads(finding: Finding) -> set[str]:
-    """Distinct source URLs that can corroborate sentiment: not mechanically
+    """Distinct threads that can corroborate sentiment: not mechanically
     failed, and not below a known engagement floor."""
     return {
-        ev.source_url
+        _thread_key(ev)
         for ev in finding.evidence
         if ev.status != "failed" and meets_floor(ev.engagement)
     }
@@ -91,11 +120,11 @@ def build_pulse(findings: list[Finding]) -> list[MethodPulse]:
 
     pulses: list[MethodPulse] = []
     for method, group in by_method.items():
-        threads: dict[str, str] = {}  # url → display line
+        threads: dict[str, str] = {}  # thread identity → display line
         for finding in group:
             for ev in finding.evidence:
                 if ev.status != "failed" and meets_floor(ev.engagement):
-                    threads.setdefault(ev.source_url, f"{ev.source_title} — {ev.source_url}")
+                    threads.setdefault(_thread_key(ev), f"{ev.source_title} — {ev.source_url}")
         sentiments = [f.sentiment for f in group if f.sentiment is not None]
         if len(threads) < MIN_PULSE_THREADS or not sentiments:
             sentiment: Sentiment = "insufficient_data"
