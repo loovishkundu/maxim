@@ -13,6 +13,52 @@ software engineers, and AI engineers alike.
 
 Architecture and design decisions: see [PLAN.md](PLAN.md).
 
+## Architecture
+
+```
+maxim "topic"
+   │
+   ▼
+┌─────────┐  domain, briefs, assumptions — confirmed
+│ PLANNER │  before any money is spent (--yes skips)
+└────┬────┘
+     ▼
+┌────────────────────────────────────────────────────────────────┐
+│ WAVE 1 — technical researchers (parallel, Semaphore(3),        │
+│ soft deadline + salvage, USD budget gate)                      │
+│   AI/Agentic · Classical ML · Data Science · Statistics        │
+│                                                                │
+│   per researcher:                                              │
+│   GATHER ──▶ DRAFT ──▶ MECHANICAL VERIFY ──▶ CRITIQUE          │
+│     ▲        (web + paper    (quote-in-source   (fresh-context │
+│     │         search tools)   match, 0 LLM)      haiku→opus)   │
+│     │                                               │          │
+│     └── RETRY / RE-VALIDATE / REPLAN ◀── decide()  ◀┘          │
+│         (bounded, deterministic routing — never LLM judgment)  │
+└────────────────────────────┬───────────────────────────────────┘
+                             ▼
+                ┌────────────────────────┐
+                │ CANONICALIZE methods   │  "XGBoost" ≡ "gradient
+                │ (one haiku call)       │   boosted trees"
+                └────────────┬───────────┘
+                             ▼
+┌────────────────────────────────────────────────────────────────┐
+│ WAVE 2 — community researcher, seeded with the methods wave 1  │
+│ ACTUALLY found (HN/GitHub tools, engagement floors,            │
+│ ≥2-thread corroboration, insufficient_data honesty)            │
+└────────────────────────────┬───────────────────────────────────┘
+                             ▼
+┌─────────────┐  cites finding   ┌─────────────────────────────┐
+│ SYNTHESIZER │  ids only        │ QUALITY GATE (0 LLM)        │
+│ (streamed)  │─────────────────▶│ missing sections, uncited   │
+│             │◀── one repair ───│ prose/rows, unknown ids     │
+└─────────────┘    pass          └──────────────┬──────────────┘
+                                                ▼
+                              maxim-reports/<topic>-<date>.md
+                              + sources by tier · rejected-claims
+                                appendix · run-metadata footer
+```
+
 ## How a run works
 
 1. **Plan** — one call classifies the topic, scopes perspectives, and writes a
