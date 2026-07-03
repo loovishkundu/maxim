@@ -7,10 +7,12 @@ from maxim.llm import (
     ClientTool,
     SourceDoc,
     ToolOutcome,
+    _system_blocks,
     harvest_blocks,
     strip_dangling_tool_use,
     thinking_kwargs,
 )
+from maxim.prompts import RESEARCHER_SYSTEMS
 from maxim.usage import UsageLedger
 
 
@@ -335,3 +337,65 @@ class TestDocumentHarvest:
         # The result would be discarded, so the tool must never execute.
         assert calls == []
         assert result.truncated
+
+
+class TestPauseTurn:
+    async def test_pause_turn_resumes_until_end_turn(self):
+        paused = _message([NS(type="text", text="searching", citations=None)], "pause_turn")
+        done = _message([NS(type="text", text="done", citations=None)], "end_turn")
+        llm = _llm([paused, paused, done])
+        result = await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=6,
+        )
+        assert len(llm.client.calls) == 3
+        assert result.continuations == 2
+        assert not result.truncated
+        # Each resume passed the paused content back as an assistant turn.
+        second_call = llm.client.calls[1]
+        assert second_call["messages"][-1]["role"] == "assistant"
+
+    async def test_pause_turn_cap_marks_truncated_and_strips_dangling(self):
+        paused = _message(
+            [
+                NS(type="text", text="searching", citations=None),
+                NS(type="server_tool_use", id="srv1", name="web_search", input={"query": "x"}),
+            ],
+            "pause_turn",
+        )
+        llm = _llm([paused])
+        result = await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=0,
+        )
+        assert result.truncated
+        last = result.messages[-1]
+        assert [getattr(b, "type", None) for b in last["content"]] == ["text"]
+
+
+def test_system_blocks_are_cacheable():
+    # PLAN's prompt-cache contract: the system prompt is sent as one
+    # cache_control block and its text is byte-identical to the input.
+    (block,) = _system_blocks("frozen prompt")
+    assert block["cache_control"] == {"type": "ephemeral"}
+    assert block["text"] == "frozen prompt"
+
+
+def test_role_system_prompts_are_byte_stable():
+    # Volatile content in a system prompt would silently break prompt caching;
+    # every researcher system prompt must be a fixed string with no leftover
+    # format placeholders.
+    for prompt in RESEARCHER_SYSTEMS.values():
+        assert "{label}" not in prompt and "{extra}" not in prompt

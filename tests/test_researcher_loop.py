@@ -20,6 +20,7 @@ from maxim.schemas import (
     DraftDossier,
     DraftEvidence,
     DraftFinding,
+    EngagementStats,
     ResearchBrief,
 )
 from maxim.usage import UsageLedger
@@ -592,3 +593,26 @@ async def test_tier_collapse_routes_to_replan():
     assert "replan" in dossier.loop_actions
     replan_parse = next(c for c in llm.parse_calls if c["output_format"] is ResearchBrief)
     assert "tier collapse" in replan_parse["messages"][0]["content"]
+
+
+async def test_engagement_stamped_through_run_researcher():
+    # The tools→sentiment join: engagement harvested during gather must land
+    # on the enriched Evidence, tolerating URL spelling drift.
+    stats = EngagementStats(source="hn", points=50, comments=20, thread_id="hn:1")
+
+    drifted_url = SOURCE_URL.replace("eng.example.com", "ENG.Example.com") + "/"
+
+    class EngagementLLM(ScriptedLLM):
+        async def run_agentic(self, *, messages, tools, **kwargs):
+            result = await super().run_agentic(messages=messages, tools=tools, **kwargs)
+            # Tool registered the article under host-case + trailing-slash drift.
+            result.engagement = {drifted_url: stats}
+            return result
+
+    draft1 = dd([df(f"claim {i}", f"m{i}") for i in range(1, 5)])
+    critique1 = cr([(f"F-ai{i}", "supported", None) for i in range(1, 5)])
+    llm = EngagementLLM(drafts=[draft1], critiques=[critique1])
+
+    dossier = await _run(llm)
+
+    assert all(f.evidence[0].engagement == stats for f in dossier.findings)

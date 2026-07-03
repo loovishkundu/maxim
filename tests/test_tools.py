@@ -184,3 +184,51 @@ def test_specs_are_valid_tool_definitions():
             assert set(tool.spec) == {"name", "description", "input_schema"}
             json.dumps(tool.spec)  # serializable
             assert tool.max_uses > 0
+
+
+async def test_arxiv_unparseable_xml_degrades_to_error(monkeypatch):
+    monkeypatch.setattr(
+        tools_base,
+        "_make_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, text="<not-xml"))
+        ),
+    )
+    outcome = await arxiv_api.tool().handler({"query": "x"})
+    assert outcome.error
+    assert "unparseable" in outcome.content
+
+
+async def test_no_results_paths_return_plain_messages(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if host == "export.arxiv.org":
+            return httpx.Response(
+                200, text='<?xml version="1.0"?><feed xmlns="http://www.w3.org/2005/Atom"></feed>'
+            )
+        return httpx.Response(200, json={"hits": [], "items": [], "data": []})
+
+    monkeypatch.setattr(
+        tools_base,
+        "_make_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    for tool_module in (hn_algolia, github_search, semantic_scholar, arxiv_api):
+        outcome = await tool_module.tool().handler({"query": "obscure"})
+        assert not outcome.error
+        assert "no " in outcome.content.casefold()
+        assert outcome.sources == []
+
+
+async def test_abstractless_paper_listed_but_not_quotable(monkeypatch):
+    response = {"data": [{"paperId": "x", "title": "No Abstract Paper", "year": 2024}]}
+    monkeypatch.setattr(
+        tools_base,
+        "_make_client",
+        lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: httpx.Response(200, json=response))
+        ),
+    )
+    outcome = await semantic_scholar.tool().handler({"query": "x"})
+    assert "No Abstract Paper" in outcome.content
+    assert outcome.sources == []  # nothing quotable without an abstract
