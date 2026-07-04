@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      # The same three-linter gate CLAUDE.md mandates locally, same order.
+      - run: uv run isort --check-only .
+      - run: uv run black --check .
+      - run: uv run ruff check .
+      # FakeLLM + MockTransport suite — no network, no API key.
+      # (Calibration tests are excluded via pyproject addopts.)
+      - run: uv run pytest -q
+
+  # Judge-drift calibration against the live API — costs real money, so it
+  # only runs when triggered by hand (requires the ANTHROPIC_API_KEY secret).
+  calibration:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv run pytest -q -m calibration
