@@ -25,8 +25,9 @@ tools agree with each other.
 
 - Never include Claude's name in commit messages — no "Co-Authored-By: Claude"
   trailers, no "Generated with Claude" lines, no AI attribution of any kind.
-- Keep them simple and direct: a short imperative subject line; a brief body
-  only when the change genuinely needs explanation.
+- Be **very precise**: one imperative subject line (≤72 chars) that states
+  exactly what changed. Body only when the *why* is non-obvious — and then at
+  most a couple of lines. No essays, no restating the diff.
 
 ## Before every push
 
