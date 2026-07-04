@@ -68,10 +68,27 @@ async def _parse_request(client: anthropic.AsyncAnthropic, **kwargs: Any) -> Any
 
 
 @api_resilient()
-async def _stream_request(client: anthropic.AsyncAnthropic, **kwargs: Any) -> Any:
+async def _stream_request(
+    client: anthropic.AsyncAnthropic, **kwargs: Any
+) -> tuple[Any, str | None]:
+    """Returns (final_message, container_id).
+
+    The code-execution container id is delivered in message_delta events and
+    the SDK's stream accumulator does NOT copy it onto the final message —
+    reading final.container in streaming mode always yields None. Harvest it
+    from the raw events instead; continuations with pending code-execution
+    tool uses must echo it back or the API rejects them with 400.
+    """
     try:
         async with client.messages.stream(**kwargs) as stream:
-            return await stream.get_final_message()
+            container_id: str | None = None
+            async for event in stream:
+                if getattr(event, "type", None) == "message_delta":
+                    delta = getattr(event, "delta", None)
+                    cid = getattr(getattr(delta, "container", None), "id", None)
+                    if cid:
+                        container_id = cid
+            return await stream.get_final_message(), container_id
     except anthropic.APIStatusError as exc:
         reraise_if_transient_status(exc)
         raise
@@ -412,7 +429,7 @@ class LLM:
             if container_id is not None:
                 request_kwargs["container"] = container_id
             try:
-                final = await _stream_request(
+                final, streamed_container_id = await _stream_request(
                     self.client,
                     model=model,
                     max_tokens=max_tokens,
@@ -431,7 +448,11 @@ class LLM:
             ) as exc:
                 raise LLMError(f"{stage}: API call failed: {exc}") from exc
             self.ledger.record(stage, model, final.usage)
-            new_container_id = getattr(getattr(final, "container", None), "id", None)
+            # Prefer the event-harvested id; fall back to final.container for
+            # non-streaming shapes (and test fakes).
+            new_container_id = streamed_container_id or getattr(
+                getattr(final, "container", None), "id", None
+            )
             if new_container_id:
                 container_id = new_container_id
             harvest_blocks(final.content, source_cache, cited_quotes, queries)

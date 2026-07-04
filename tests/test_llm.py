@@ -104,8 +104,9 @@ def _message(content, stop_reason):
 
 
 class FakeStream:
-    def __init__(self, message):
+    def __init__(self, message, events=()):
         self._message = message
+        self._events = list(events)
 
     async def __aenter__(self):
         return self
@@ -113,19 +114,31 @@ class FakeStream:
     async def __aexit__(self, *exc):
         return False
 
+    def __aiter__(self):
+        async def gen():
+            for event in self._events:
+                yield event
+
+        return gen()
+
     async def get_final_message(self):
         return self._message
 
 
 class FakeAnthropicClient:
     def __init__(self, responses):
+        # Each response: a message, or (message, [stream events]).
         self._responses = list(responses)
         self.calls: list[dict] = []
         self.messages = self
 
     def stream(self, **kwargs):
         self.calls.append(kwargs)
-        return FakeStream(self._responses.pop(0))
+        response = self._responses.pop(0)
+        if isinstance(response, tuple):
+            message, events = response
+            return FakeStream(message, events)
+        return FakeStream(response)
 
 
 def _tool_use(tid, name, tool_input):
@@ -459,3 +472,31 @@ class TestContainerContinuation:
             max_continuations=6,
         )
         assert "container" not in llm.client.calls[0]
+
+
+class TestContainerFromStreamEvents:
+    async def test_container_id_harvested_from_message_delta_events(self):
+        # The SDK's stream accumulator never copies Delta.container onto the
+        # final message — final.container is always None in streaming mode.
+        # The id must be harvested from the raw message_delta events, or every
+        # continuation with pending code-exec tool uses 400s (the bug that
+        # killed the AI/Agentic researcher in the 2026-07-03 deep run).
+        delta_event = NS(
+            type="message_delta",
+            delta=NS(container=NS(id="container_from_delta"), stop_reason=None),
+        )
+        paused = _message([NS(type="text", text="searching", citations=None)], "pause_turn")
+        # final.container is None, exactly like the real accumulator produces.
+        done = _message([NS(type="text", text="done", citations=None)], "end_turn")
+        llm = _llm([(paused, [delta_event]), done])
+        await llm.run_agentic(
+            stage="s",
+            system="s",
+            messages=[{"role": "user", "content": "go"}],
+            tools=[],
+            model="claude-opus-4-8",
+            effort="medium",
+            max_tokens=1000,
+            max_continuations=6,
+        )
+        assert llm.client.calls[1]["container"] == "container_from_delta"
