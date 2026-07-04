@@ -46,6 +46,7 @@ class FakeLLM:
         ledger,
         fail_perspectives=frozenset(),
         fail_once_perspectives=frozenset(),
+        fail_400_perspectives=frozenset(),
         synth_stop_reason="end_turn",
         synth_raises=False,
         synth_raises_generic=False,
@@ -57,6 +58,7 @@ class FakeLLM:
         self.ledger = ledger
         self.fail_perspectives = fail_perspectives
         self.fail_once_perspectives = fail_once_perspectives
+        self.fail_400_perspectives = fail_400_perspectives
         self.synth_stop_reasons = list(
             synth_stop_reason if isinstance(synth_stop_reason, list) else [synth_stop_reason]
         )
@@ -131,6 +133,17 @@ class FakeLLM:
         self.agentic_messages.setdefault(stage, messages[0]["content"])
         if perspective in self.fail_perspectives:
             raise RuntimeError("boom: simulated researcher crash")
+        if perspective in self.fail_400_perspectives:
+            import anthropic
+            import httpx
+
+            request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+            cause = anthropic.BadRequestError(
+                "container_id is required when there are pending tool uses",
+                response=httpx.Response(400, request=request),
+                body=None,
+            )
+            raise LLMError(f"{stage}: API call failed: {cause}") from cause
         if perspective in self.fail_once_perspectives and first_call_for_stage:
             raise LLMError(f"{stage}: API call failed: Connection error.")
         return AgenticResult(
@@ -511,3 +524,24 @@ async def test_canonicalizer_crash_degrades_to_original_names(monkeypatch):
     assert any("canonicalization failed" in w for w in result.warnings)
     # Run completed with original method names.
     assert any(d.findings for d in result.dossiers)
+
+
+async def test_deterministic_400_is_not_retried(monkeypatch):
+    # A 400-caused failure replays identically on a fresh conversation —
+    # the 2026-07-03 deep run burned a full second gather re-hitting the
+    # same container_id error. Fail fast instead.
+    holder = _install(monkeypatch, fail_400_perspectives=frozenset({"statistics"}))
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    fake = holder["llm"]
+    statistics_gathers = [s for s in fake.agentic_stages if s == "researcher:statistics"]
+    assert len(statistics_gathers) == 1  # no doomed second attempt
+    assert not any("retrying with a fresh conversation" in w for w in result.warnings)
+    assert any("deterministic client error — not retried" in w for w in result.warnings)
+    by_perspective = {d.perspective: d for d in result.dossiers}
+    assert not by_perspective["statistics"].ok
+    assert result.partial

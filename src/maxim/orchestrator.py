@@ -16,6 +16,8 @@ import asyncio
 import time
 from collections.abc import Callable
 
+import anthropic
+
 from .config import Settings
 from .llm import LLM
 from .methods import apply_canonical_names, canonical_names, canonicalize_methods
@@ -48,6 +50,16 @@ RESEARCHER_ATTEMPTS = 2
 
 class PlanRejected(Exception):
     """The user declined the plan at the confirmation gate."""
+
+
+def _retry_would_help(exc: BaseException) -> bool:
+    """A deterministic client error (4xx other than 429) replays identically
+    on a fresh conversation — burning a second full gather on it is pure
+    waste. Transient causes (and unknown ones) stay retryable."""
+    cause = exc.__cause__
+    if isinstance(cause, anthropic.APIStatusError):
+        return cause.status_code == 429 or cause.status_code >= 500
+    return True
 
 
 async def run_pipeline(
@@ -136,14 +148,16 @@ async def run_pipeline(
                             )
                             progress(label, "failed — salvaged partial results")
                             return snapshot
-                        if attempt < RESEARCHER_ATTEMPTS and not ledger.over_budget:
+                        retryable = _retry_would_help(exc)
+                        if retryable and attempt < RESEARCHER_ATTEMPTS and not ledger.over_budget:
                             warnings.append(
                                 f"{brief.perspective}: attempt {attempt} failed ({exc}) "
                                 "— retrying with a fresh conversation"
                             )
                             progress(label, "failed — retrying with a fresh conversation…")
                             continue
-                        warnings.append(f"{brief.perspective}: failed — {exc}")
+                        note = "" if retryable else " (deterministic client error — not retried)"
+                        warnings.append(f"{brief.perspective}: failed — {exc}{note}")
                         progress(label, f"failed: {exc}")
                         failure_note = str(exc)
                         break
