@@ -16,7 +16,12 @@ from __future__ import annotations
 import anthropic
 from pyresilience import CircuitBreakerConfig, CircuitOpenError, RetryConfig, resilient
 
-__all__ = ["TRANSIENT_API_ERRORS", "CircuitOpenError", "api_resilient"]
+__all__ = [
+    "TRANSIENT_API_ERRORS",
+    "CircuitOpenError",
+    "api_resilient",
+    "transient_resilient",
+]
 
 # Worth retrying above the SDK's own retry layer. RateLimitError (429) and
 # InternalServerError (5xx, incl. 529 overloaded) subclass APIStatusError;
@@ -28,6 +33,45 @@ TRANSIENT_API_ERRORS: tuple[type[Exception], ...] = (
 )
 
 
+def transient_resilient(
+    retry_on: tuple[type[BaseException], ...],
+    *,
+    max_attempts: int = 3,
+    delay: float = 1.0,
+    max_delay: float = 20.0,
+    failure_threshold: int | None = 6,
+    recovery_timeout: float = 30.0,
+):
+    """Decorator factory: retry the given transient errors; optional breaker.
+
+    A factory (not a shared decorator) so every decorated function owns its
+    own breaker state — parse calls tripping must not open the gather
+    breaker, and tests can build isolated instances with tiny delays. Pass
+    failure_threshold=None to skip the breaker (used for the external tool
+    APIs, where one dead host must not block the others sharing a policy).
+    """
+    breaker = (
+        CircuitBreakerConfig(
+            failure_threshold=failure_threshold,
+            recovery_timeout=recovery_timeout,
+            error_types=retry_on,
+        )
+        if failure_threshold is not None
+        else None
+    )
+    return resilient(
+        retry=RetryConfig(
+            max_attempts=max_attempts,
+            delay=delay,
+            backoff_factor=2.0,
+            max_delay=max_delay,
+            jitter=True,
+            retry_on=retry_on,
+        ),
+        circuit_breaker=breaker,
+    )
+
+
 def api_resilient(
     *,
     max_attempts: int = 3,
@@ -35,24 +79,11 @@ def api_resilient(
     failure_threshold: int = 6,
     recovery_timeout: float = 30.0,
 ):
-    """Decorator factory: one retry policy + one circuit breaker per call type.
-
-    A factory (not a shared decorator) so every decorated function owns its
-    own breaker — parse calls tripping must not open the gather breaker, and
-    tests can build isolated instances with tiny delays.
-    """
-    return resilient(
-        retry=RetryConfig(
-            max_attempts=max_attempts,
-            delay=delay,
-            backoff_factor=2.0,
-            max_delay=20.0,
-            jitter=True,
-            retry_on=TRANSIENT_API_ERRORS,
-        ),
-        circuit_breaker=CircuitBreakerConfig(
-            failure_threshold=failure_threshold,
-            recovery_timeout=recovery_timeout,
-            error_types=TRANSIENT_API_ERRORS,
-        ),
+    """Resilience policy for Anthropic API calls."""
+    return transient_resilient(
+        TRANSIENT_API_ERRORS,
+        max_attempts=max_attempts,
+        delay=delay,
+        failure_threshold=failure_threshold,
+        recovery_timeout=recovery_timeout,
     )

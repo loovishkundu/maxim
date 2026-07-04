@@ -157,9 +157,50 @@ async def test_empty_query_is_an_error_without_http(http):
     assert not http  # never hit the network
 
 
-async def test_http_failure_propagates_for_llm_layer_to_catch(monkeypatch):
+async def test_transient_429_is_retried_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+
     def handler(request):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(429, json={"message": "rate limited"})
+        return httpx.Response(200, json=GITHUB_RESPONSE)
+
+    monkeypatch.setattr(
+        tools_base,
+        "_make_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    outcome = await github_search.tool().handler({"query": "x"})
+    assert not outcome.error
+    assert calls["n"] == 3  # two 429s retried, third attempt succeeded
+
+
+async def test_persistent_429_raises_for_llm_layer_to_catch(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
         return httpx.Response(429, json={"message": "rate limited"})
+
+    monkeypatch.setattr(
+        tools_base,
+        "_make_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    # After retries are exhausted the error propagates; _run_client_tools
+    # turns it into an is_error tool result.
+    with pytest.raises(tools_base.TransientHTTPError):
+        await github_search.tool().handler({"query": "x"})
+    assert calls["n"] == 3
+
+
+async def test_terminal_4xx_is_not_retried(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(404, json={"message": "not found"})
 
     monkeypatch.setattr(
         tools_base,
@@ -168,6 +209,26 @@ async def test_http_failure_propagates_for_llm_layer_to_catch(monkeypatch):
     )
     with pytest.raises(httpx.HTTPStatusError):
         await github_search.tool().handler({"query": "x"})
+    assert calls["n"] == 1  # a real 4xx is a bug or bad query, not a blip
+
+
+async def test_transport_error_is_retried(monkeypatch):
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("connection dropped", request=request)
+        return httpx.Response(200, json=GITHUB_RESPONSE)
+
+    monkeypatch.setattr(
+        tools_base,
+        "_make_client",
+        lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+    outcome = await github_search.tool().handler({"query": "x"})
+    assert not outcome.error
+    assert calls["n"] == 2
 
 
 def test_perspective_tool_assignment():

@@ -93,11 +93,15 @@ validated findings instead of losing the run.
 
 ### Failure handling
 
-Every API call runs through a [pyresilience](https://github.com/AhsanSheraz/pyresilience)
-policy: transient failures (connection drops, 429, 5xx/529) retry with
-exponential backoff and jitter; 4xx client errors never retry; a circuit
-breaker per call type fails remaining calls fast once the API is clearly
-down. Above that, a researcher that dies outright gets one
+Every Anthropic API call runs through a
+[pyresilience](https://github.com/AhsanSheraz/pyresilience) policy:
+transient failures (connection drops, 429, 5xx/529) retry with exponential
+backoff and jitter; 4xx client errors never retry; a circuit breaker per
+call type fails remaining calls fast once the API is clearly down. The
+client tools' own HTTP calls (HN Algolia, GitHub, Semantic Scholar, arXiv)
+retry the same way — transport errors, 429, 5xx — and a tool that stays
+down degrades to capped is_error results the researcher routes around.
+Above that, a researcher that dies outright gets one
 fresh-conversation retry before its section is given up, one that dies
 mid-run salvages its already-validated findings from a checkpoint, and
 every failure or retry is announced in the live progress stream the moment
