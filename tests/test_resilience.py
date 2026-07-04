@@ -84,3 +84,104 @@ async def test_llm_layer_converts_circuit_open_to_llmerror(monkeypatch):
             model="claude-opus-4-8",
             effort="low",
         )
+
+
+def mid_stream_drop() -> httpx.ReadError:
+    # What a connection reset during SSE body iteration actually raises —
+    # the SDK's exception wrapping covers only the initial send().
+    return httpx.ReadError("Connection reset by peer", request=_REQUEST)
+
+
+def overloaded_status() -> anthropic.APIStatusError:
+    # Mid-stream `error` SSE events arrive on a live 200 response, so the SDK
+    # raises the generic base class, not InternalServerError.
+    return anthropic.APIStatusError(
+        "overloaded",
+        response=httpx.Response(200, request=_REQUEST),
+        body={"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}},
+    )
+
+
+async def test_mid_stream_transport_errors_are_retried():
+    call, calls = flaky(2, mid_stream_drop)
+    assert await call() == "ok"
+    assert calls["n"] == 3
+
+
+async def test_reclassified_overload_is_retried():
+    from maxim.resilience import reraise_if_transient_status
+
+    calls = {"n": 0}
+
+    @api_resilient(delay=0.001)
+    async def call():
+        calls["n"] += 1
+        if calls["n"] <= 2:
+            try:
+                raise overloaded_status()
+            except anthropic.APIStatusError as exc:
+                reraise_if_transient_status(exc)
+                raise
+        return "ok"
+
+    assert await call() == "ok"
+    assert calls["n"] == 3
+
+
+def test_typed_4xx_is_never_reclassified():
+    from maxim.resilience import reraise_if_transient_status
+
+    # BadRequestError is a typed subclass — reclassification must not touch it.
+    reraise_if_transient_status(bad_request())  # no raise
+
+
+async def test_persistent_transport_error_becomes_llmerror(monkeypatch):
+    async def dead_stream(client, on_text, emitted, **kwargs):
+        raise mid_stream_drop()
+
+    monkeypatch.setattr(llm_module, "_stream_text_request", dead_stream)
+    llm = LLM(settings=Settings(), ledger=UsageLedger(budget_usd=10.0), client=object())
+    with pytest.raises(LLMError, match="API call failed"):
+        await llm.stream_text(
+            stage="synthesizer",
+            system="s",
+            messages=[{"role": "user", "content": "x"}],
+            model="claude-sonnet-5",
+            effort="high",
+            max_tokens=100,
+        )
+
+
+async def test_parse_validation_error_uses_the_retry_budget(monkeypatch):
+    # messages.parse validates eagerly and can raise raw pydantic
+    # ValidationError — it must consume the validation-retry budget and end
+    # as LLMError, never crash the stage.
+    from pydantic import BaseModel, TypeAdapter
+
+    class Expected(BaseModel):
+        value: int
+
+    def validation_error():
+        try:
+            TypeAdapter(Expected).validate_json('{"wrong": true}')
+        except Exception as exc:
+            return exc
+
+    calls = {"n": 0}
+
+    async def raising_parse(client, **kwargs):
+        calls["n"] += 1
+        raise validation_error()
+
+    monkeypatch.setattr(llm_module, "_parse_request", raising_parse)
+    llm = LLM(settings=Settings(), ledger=UsageLedger(budget_usd=10.0), client=object())
+    with pytest.raises(LLMError, match="failed validation"):
+        await llm.parse(
+            stage="canonicalizer",
+            system="s",
+            messages=[{"role": "user", "content": "x"}],
+            output_format=Expected,
+            model="claude-opus-4-8",
+            effort="low",
+        )
+    assert calls["n"] == Settings().max_parse_retries + 1

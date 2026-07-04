@@ -14,10 +14,16 @@ from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 import anthropic
+import httpx
 from pydantic import BaseModel, ValidationError
 
 from .config import Settings
-from .resilience import CircuitOpenError, api_resilient
+from .resilience import (
+    CircuitOpenError,
+    TransientServerError,
+    api_resilient,
+    reraise_if_transient_status,
+)
 from .usage import UsageLedger
 
 T = TypeVar("T", bound=BaseModel)
@@ -54,13 +60,21 @@ _TOOL_USE_TYPES = {"server_tool_use", "tool_use"}
 # breaker without blocking the others.
 @api_resilient()
 async def _parse_request(client: anthropic.AsyncAnthropic, **kwargs: Any) -> Any:
-    return await client.messages.parse(**kwargs)
+    try:
+        return await client.messages.parse(**kwargs)
+    except anthropic.APIStatusError as exc:
+        reraise_if_transient_status(exc)
+        raise
 
 
 @api_resilient()
 async def _stream_request(client: anthropic.AsyncAnthropic, **kwargs: Any) -> Any:
-    async with client.messages.stream(**kwargs) as stream:
-        return await stream.get_final_message()
+    try:
+        async with client.messages.stream(**kwargs) as stream:
+            return await stream.get_final_message()
+    except anthropic.APIStatusError as exc:
+        reraise_if_transient_status(exc)
+        raise
 
 
 @api_resilient()
@@ -75,15 +89,19 @@ async def _stream_text_request(
     `emitted` persists across retry attempts (same dict object), so a retry
     replays only the suffix the callback has not seen yet.
     """
-    async with client.messages.stream(**kwargs) as stream:
-        if on_text is not None:
-            seen = 0
-            async for chunk in stream.text_stream:
-                seen += len(chunk)
-                if seen > emitted["chars"]:
-                    on_text(chunk[-(seen - emitted["chars"]) :])
-                    emitted["chars"] = seen
-        return await stream.get_final_message()
+    try:
+        async with client.messages.stream(**kwargs) as stream:
+            if on_text is not None:
+                seen = 0
+                async for chunk in stream.text_stream:
+                    seen += len(chunk)
+                    if seen > emitted["chars"]:
+                        on_text(chunk[-(seen - emitted["chars"]) :])
+                        emitted["chars"] = seen
+            return await stream.get_final_message()
+    except anthropic.APIStatusError as exc:
+        reraise_if_transient_status(exc)
+        raise
 
 
 class LLMError(RuntimeError):
@@ -289,11 +307,19 @@ class LLM:
             except (
                 anthropic.APIConnectionError,
                 anthropic.APIStatusError,
+                httpx.TransportError,
+                TransientServerError,
                 CircuitOpenError,
             ) as exc:
                 # The SDK and the resilience layer already retried transient
                 # failures; whatever reaches here is fatal for this call.
                 raise LLMError(f"{stage}: API call failed: {exc}") from exc
+            except ValidationError as exc:
+                # messages.parse validates eagerly and raises the raw pydantic
+                # error itself — route it through the same validation-retry
+                # budget instead of letting it crash the stage.
+                last_error = exc
+                continue
             self.ledger.record(stage, model, response.usage)
             stop_reason = getattr(response, "stop_reason", None)
             if stop_reason == "refusal":
@@ -399,6 +425,8 @@ class LLM:
             except (
                 anthropic.APIConnectionError,
                 anthropic.APIStatusError,
+                httpx.TransportError,
+                TransientServerError,
                 CircuitOpenError,
             ) as exc:
                 raise LLMError(f"{stage}: API call failed: {exc}") from exc
@@ -529,6 +557,8 @@ class LLM:
         except (
             anthropic.APIConnectionError,
             anthropic.APIStatusError,
+            httpx.TransportError,
+            TransientServerError,
             CircuitOpenError,
         ) as exc:
             raise LLMError(f"{stage}: API call failed: {exc}") from exc
