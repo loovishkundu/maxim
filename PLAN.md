@@ -1,10 +1,12 @@
 # Maxim — Architecture & Build Plan
 
-> Status: M2 implemented — five-loop state machine with per-depth thresholds,
-> two-wave fan-out with method canonicalization, community sentiment rigor,
-> reputation tiers, custom client-side tools, a batched critic with
-> single-finding arbitration, and a deterministic report quality gate. M3 (Claude skill,
-> calibration suite, golden-report test) still to come.
+> Status: M3 implemented — Claude Code skill (.claude/skills/maxim) with an
+> in-repo contract test, wrapper-contract suite (stdout purity, exit codes,
+> JSON round-trip), critic calibration suite (marker-gated, live API),
+> golden-report regression test, and CI. Deliberately omitted: the MCP extra
+> (the skill covers integration; §10's review already favored skill-over-MCP)
+> and --resume (checkpoint salvage + researcher retries recover failures, and
+> runs stay under ~30 min). M2 details below remain accurate.
 > Maxim replaces manual internet-scrolling when you start a new feature: it scopes the topic,
 > researches it from multiple perspectives in parallel, verifies every claim against its source,
 > and synthesizes one structured, cited report — including how the community is actually

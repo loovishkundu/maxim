@@ -165,6 +165,19 @@ With `--json`, the full `RunResult` JSON is printed to stdout and all progress
 goes to stderr — friendly to scripts and agent wrappers. `--quiet` implies
 `--yes`.
 
+## Use from Claude Code (skill)
+
+The repo ships a Claude Code skill at
+[.claude/skills/maxim/SKILL.md](.claude/skills/maxim/SKILL.md). Open this
+repo in Claude Code and ask things like "research approaches for X before I
+build it" or "what is the community saying about Y" — the skill confirms
+depth/cost with you, runs Maxim as a background task (`--json --yes`),
+streams progress, and presents the TL;DR + Method Landscape with a link to
+the full report. It trusts the pipeline's verification (confidence, verdicts,
+tiers) instead of re-researching. A test suite keeps the skill honest against
+the real CLI: flags, exit codes, schema version, and field names are checked
+in CI.
+
 ## How it verifies claims
 
 Citations are the product. The chain, in order:
@@ -196,13 +209,22 @@ silently kept.
 ## Development
 
 ```bash
-uv run pytest        # tests (no network needed)
+uv run pytest        # tests (no network needed; calibration excluded)
 
 # lint — all three must pass before any commit (see CLAUDE.md)
 uv run isort .
 uv run black .
 uv run ruff check .
+
+# judge-drift calibration against the live API (costs a few cents)
+uv run pytest -m calibration
+
+# regenerate the golden report snapshot after an intentional template change
+UPDATE_GOLDEN=1 uv run pytest tests/test_golden_report.py
 ```
+
+CI (GitHub Actions) runs the same lint gate and test suite on every push
+and PR; the calibration job runs only on manual dispatch.
 
 ## Project layout
 
@@ -226,6 +248,9 @@ src/maxim/       # pipeline stages, one module each
   report.py      #   citation resolution, sources, appendices, run metadata
   tools/         #   client-side tools: Semantic Scholar, arXiv, HN, GitHub
 tests/           # FakeLLM + MockTransport suite — no network, no API key
+  golden/        #   snapshot for the golden-report regression test
+.claude/skills/  # the Claude Code skill wrapping the CLI
+.github/         # CI: lint gate + tests on push; calibration on dispatch
 PLAN.md          # architecture plan
 CLAUDE.md        # project rules (lint gate, test gate, environment quirks)
 .env.example     # template for API keys (copy to .env, never commit .env)
