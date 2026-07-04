@@ -45,6 +45,7 @@ class FakeLLM:
         settings,
         ledger,
         fail_perspectives=frozenset(),
+        fail_once_perspectives=frozenset(),
         synth_stop_reason="end_turn",
         synth_raises=False,
         synth_texts=None,
@@ -53,6 +54,7 @@ class FakeLLM:
         self.settings = settings
         self.ledger = ledger
         self.fail_perspectives = fail_perspectives
+        self.fail_once_perspectives = fail_once_perspectives
         self.synth_stop_reasons = list(
             synth_stop_reason if isinstance(synth_stop_reason, list) else [synth_stop_reason]
         )
@@ -118,10 +120,13 @@ class FakeLLM:
         on_progress=None,
     ):
         perspective = stage.split(":", 1)[1]
+        first_call_for_stage = stage not in self.agentic_stages
         self.agentic_stages.append(stage)
         self.agentic_messages.setdefault(stage, messages[0]["content"])
         if perspective in self.fail_perspectives:
             raise RuntimeError("boom: simulated researcher crash")
+        if perspective in self.fail_once_perspectives and first_call_for_stage:
+            raise LLMError(f"{stage}: API call failed: Connection error.")
         return AgenticResult(
             messages=messages + [{"role": "assistant", "content": "searched"}],
             final_stop_reason="end_turn",
@@ -452,3 +457,21 @@ async def test_fallback_report_carries_pulse_and_tiers(monkeypatch):
     )
     assert "Community Pulse (mechanical aggregates)" in result.report_markdown
     assert "[tier B]" in result.report_markdown
+
+
+async def test_first_gather_failure_is_retried_and_heals(monkeypatch):
+    # The 2026-07-03 hierarchical-memory run shipped 'No findings' sections
+    # because one hard failure killed a researcher outright. A first-gather
+    # failure now gets one fresh retry instead of costing a report section.
+    _install(monkeypatch, fail_once_perspectives=frozenset({"statistics"}))
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    by_perspective = {d.perspective: d for d in result.dossiers}
+    assert by_perspective["statistics"].ok  # healed on attempt 2
+    assert len(by_perspective["statistics"].findings) == 3
+    assert any("retrying with a fresh conversation" in w for w in result.warnings)
+    assert not any(w.startswith("statistics: failed —") for w in result.warnings)

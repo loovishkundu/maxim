@@ -41,6 +41,9 @@ ConfirmFn = Callable[[ResearchPlan], bool]
 # Researchers self-terminate at a soft deadline and salvage partial findings;
 # the hard wait_for backstop only fires if one hangs past the grace window.
 TIMEOUT_GRACE_S = 60.0
+# Total tries per researcher: a hard failure with nothing to salvage gets one
+# fresh-conversation retry before it costs the report a whole section.
+RESEARCHER_ATTEMPTS = 2
 
 
 class PlanRejected(Exception):
@@ -77,51 +80,75 @@ async def run_pipeline(
                 if ledger.over_budget:
                     warnings.append(f"{brief.perspective}: skipped — budget exhausted")
                     return stub_dossier(brief, "skipped: budget exhausted")
-                checkpoint: dict[str, ResearchDossier] = {}
-                try:
-                    dossier = await asyncio.wait_for(
-                        run_researcher(
-                            brief,
-                            plan,
-                            settings,
-                            llm,
-                            progress=lambda msg, _l=label: progress(_l, msg),
-                            deadline=time.monotonic() + timeout,
-                            checkpoint=checkpoint,
-                        ),
-                        timeout=timeout + TIMEOUT_GRACE_S,
-                    )
-                    progress(
-                        label,
-                        f"done — {len(dossier.findings)} validated, "
-                        f"{len(dossier.rejected)} rejected",
-                    )
-                    return dossier
-                except TimeoutError:
-                    # The soft deadline should have ended the loop gracefully;
-                    # reaching this backstop means a call hung outright. Use the
-                    # last completed pass's snapshot rather than losing the run.
-                    warnings.append(
-                        f"{brief.perspective}: hung past {timeout:.0f}s + grace and was "
-                        "cancelled — the cancelled call's usage is not counted; real "
-                        "spend may exceed the estimate"
-                    )
-                    snapshot = checkpoint.get("dossier")
-                    if snapshot is not None:
+                # One fresh retry for hard failures: a researcher that dies in
+                # its first gather must not cost a whole report section when a
+                # second attempt would have worked. Mid-loop failures salvage
+                # the checkpoint instead — validated findings beat a re-run.
+                failure_note = "all attempts failed"
+                for attempt in range(1, RESEARCHER_ATTEMPTS + 1):
+                    checkpoint: dict[str, ResearchDossier] = {}
+                    try:
+                        dossier = await asyncio.wait_for(
+                            run_researcher(
+                                brief,
+                                plan,
+                                settings,
+                                llm,
+                                progress=lambda msg, _l=label: progress(_l, msg),
+                                deadline=time.monotonic() + timeout,
+                                checkpoint=checkpoint,
+                            ),
+                            timeout=timeout + TIMEOUT_GRACE_S,
+                        )
                         progress(
                             label,
-                            f"timed out — salvaged {len(snapshot.findings)} findings "
-                            "from the last completed pass",
+                            f"done — {len(dossier.findings)} validated, "
+                            f"{len(dossier.rejected)} rejected",
                         )
-                        return snapshot
-                    progress(label, "timed out")
-                    searches, fetches = ledger.stage_counts(label)
-                    return stub_dossier(brief, f"timed out after {timeout:.0f}s", searches, fetches)
-                except Exception as exc:  # degrade, never die: synthesis still runs
-                    warnings.append(f"{brief.perspective}: failed — {exc}")
-                    progress(label, f"failed: {exc}")
-                    searches, fetches = ledger.stage_counts(label)
-                    return stub_dossier(brief, str(exc), searches, fetches)
+                        return dossier
+                    except TimeoutError:
+                        # The soft deadline should have ended the loop
+                        # gracefully; this backstop means a call hung outright.
+                        # No retry — the wall clock is spent — but the last
+                        # completed pass's snapshot beats losing the run.
+                        warnings.append(
+                            f"{brief.perspective}: hung past {timeout:.0f}s + grace and "
+                            "was cancelled — the cancelled call's usage is not counted; "
+                            "real spend may exceed the estimate"
+                        )
+                        snapshot = checkpoint.get("dossier")
+                        if snapshot is not None:
+                            progress(
+                                label,
+                                f"timed out — salvaged {len(snapshot.findings)} findings "
+                                "from the last completed pass",
+                            )
+                            return snapshot
+                        progress(label, "timed out")
+                        failure_note = f"timed out after {timeout:.0f}s"
+                        break
+                    except Exception as exc:  # degrade, never die
+                        snapshot = checkpoint.get("dossier")
+                        if snapshot is not None:
+                            warnings.append(
+                                f"{brief.perspective}: failed mid-run ({exc}) — salvaged "
+                                f"{len(snapshot.findings)} validated findings"
+                            )
+                            progress(label, "failed — salvaged partial results")
+                            return snapshot
+                        if attempt < RESEARCHER_ATTEMPTS and not ledger.over_budget:
+                            warnings.append(
+                                f"{brief.perspective}: attempt {attempt} failed ({exc}) "
+                                "— retrying with a fresh conversation"
+                            )
+                            progress(label, "failed — retrying with a fresh conversation…")
+                            continue
+                        warnings.append(f"{brief.perspective}: failed — {exc}")
+                        progress(label, f"failed: {exc}")
+                        failure_note = str(exc)
+                        break
+                searches, fetches = ledger.stage_counts(label)
+                return stub_dossier(brief, failure_note, searches, fetches)
 
         wave1_briefs = [b for b in plan.briefs if b.perspective != "community"]
         community_brief = next((b for b in plan.briefs if b.perspective == "community"), None)
