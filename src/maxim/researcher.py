@@ -80,14 +80,20 @@ def _research_tools(settings: Settings, perspective: str) -> list[Any]:
 
 
 def _fetch_tool(settings: Settings, max_uses: int) -> dict[str, Any]:
-    return {
-        "type": "web_fetch_20260209",
+    tool: dict[str, Any] = {
+        "type": "web_fetch_20260318",
         "name": "web_fetch",
         "max_uses": max_uses,
         "citations": {"enabled": True},
         "max_content_tokens": settings.web_fetch_max_content_tokens,
         "blocked_domains": BLOCKED_DOMAINS,
+        # NOTE: response_inclusion stays at its "full" default on purpose —
+        # "excluded" would drop the fetched page text we harvest into the
+        # SourceCache, breaking mechanical quote verification.
     }
+    if not settings.web_fetch_use_cache:
+        tool["use_cache"] = False  # --fresh: bypass the server fetch cache
+    return tool
 
 
 def _gather_message(brief: ResearchBrief, plan: ResearchPlan) -> str:

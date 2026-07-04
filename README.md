@@ -140,7 +140,16 @@ uv run maxim "..." --depth deep
 
 # subset of perspectives, machine-readable output, no confirmation prompt
 uv run maxim "..." --perspectives classical_ml,statistics --json --yes
+
+# fast-moving topic: bypass the server-side page-fetch cache
+uv run maxim "..." --fresh
 ```
+
+Freshness: web search sees today's web (well-indexed sources surface
+same-day) and the HN/GitHub tools are near-real-time; arXiv appears on the
+next announcement cycle and Semantic Scholar lags days. Fetched pages are
+served from a server-side cache by default — pass `--fresh` when today's
+version of an already-published page matters.
 
 A run prints the research plan (domain, perspectives, assumptions, estimated
 cost) and asks for confirmation before spending money. Reports land in

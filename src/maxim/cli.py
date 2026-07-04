@@ -71,6 +71,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=3,
         help="parallel researcher agents (default: 3)",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="bypass the server-side page-fetch cache (slower; use for "
+        "fast-moving topics where today's version of a page matters)",
+    )
     parser.add_argument("--json", action="store_true", help="emit RunResult JSON on stdout")
     parser.add_argument(
         "--quiet",
@@ -208,6 +214,7 @@ def main(argv: list[str] | None = None) -> int:
         assume_yes=args.yes or args.quiet,
         quiet=args.quiet,
         json_output=args.json,
+        web_fetch_use_cache=not args.fresh,
     )
 
     # Not constructed with quiet=: errors must always reach stderr; progress and

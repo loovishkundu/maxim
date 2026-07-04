@@ -247,7 +247,7 @@ async def test_revalidate_refetches_without_searching():
     assert "this text is in no fetched page at all" in revalidate_msg
     assert SOURCE_URL in revalidate_msg
     tool_types = {t["type"] for t in llm.agentic_calls[1]["tools"]}
-    assert tool_types == {"web_fetch_20260209"}
+    assert tool_types == {"web_fetch_20260318"}
 
 
 async def test_deadline_stops_loop_and_salvages_findings():
@@ -626,3 +626,14 @@ async def test_pass1_failure_with_nothing_validated_raises_for_retry():
 
     with pytest.raises(LLMError):
         await _run(llm)
+
+
+def test_fresh_mode_bypasses_the_fetch_cache():
+    from maxim.researcher import _fetch_tool
+
+    cached = _fetch_tool(Settings(), 5)
+    assert cached["type"] == "web_fetch_20260318"
+    assert "use_cache" not in cached  # default: server cache stays on
+
+    fresh = _fetch_tool(Settings(web_fetch_use_cache=False), 5)
+    assert fresh["use_cache"] is False

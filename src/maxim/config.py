@@ -149,6 +149,9 @@ class Settings:
 
     max_parse_retries: int = 2
     web_fetch_max_content_tokens: int = 25_000
+    # False bypasses the server-side fetch cache (slower, but guarantees
+    # today's version of already-indexed URLs) — the CLI's --fresh flag.
+    web_fetch_use_cache: bool = True
 
     @property
     def preset(self) -> DepthPreset:
