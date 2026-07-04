@@ -382,6 +382,8 @@ async def run_researcher(
                 effort=preset.researcher_effort,
             )
         except LLMError as exc:
+            if not frozen and not pending_weak:
+                raise  # nothing to salvage — let the orchestrator retry fresh
             stop_notes.append(f"draft extraction failed ({exc}) — keeping partial results")
             stopped_with_pending_work = True
             break
@@ -409,6 +411,8 @@ async def run_researcher(
                     all_claims=[f.claim for f in frozen + pending_weak + survivors],
                 )
             except LLMError as exc:
+                if not frozen and not pending_weak:
+                    raise  # nothing to salvage — let the orchestrator retry fresh
                 # Uncritiqued survivors are discarded — they never passed the
                 # gate — but everything validated so far is kept.
                 stop_notes.append(f"critique failed ({exc}) — keeping partial results")
@@ -548,6 +552,8 @@ async def run_researcher(
                 on_progress=progress,
             )
         except LLMError as exc:
+            if not frozen and not pending_weak:
+                raise  # nothing to salvage — let the orchestrator retry fresh
             stop_notes.append(f"repair search failed ({exc}) — keeping partial results")
             stopped_with_pending_work = True
             break

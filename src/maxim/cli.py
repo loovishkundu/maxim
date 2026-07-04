@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import os
 import sys
+import tempfile
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -139,14 +140,26 @@ async def _run(settings: Settings, topic: str, console: Console) -> int:
 
     path = settings.out or report_path(settings.out_dir, topic)
     write_error: str | None = None
+    dumped_to_stdout = False
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(result.report_markdown, encoding="utf-8")
     except OSError as exc:
         # The run is already paid for — never discard the result over a write
-        # failure; in --json mode the payload still goes to stdout.
+        # failure. Salvage to a temp file; failing even that, dump the
+        # markdown to stdout so it exists SOMEWHERE.
         write_error = f"could not write report to {path}: {exc}"
         console.print(f"[bold red]error:[/bold red] {write_error}")
+        try:
+            fallback = Path(tempfile.mkdtemp(prefix="maxim-")) / path.name
+            fallback.write_text(result.report_markdown, encoding="utf-8")
+            console.print(f"[yellow]report salvaged to:[/yellow] {fallback}")
+            path = fallback
+            write_error = None
+        except OSError:
+            if not settings.json_output:
+                print(result.report_markdown)
+                dumped_to_stdout = True
 
     if not settings.quiet:
         console.print()
@@ -167,7 +180,11 @@ async def _run(settings: Settings, topic: str, console: Console) -> int:
         print(path)
 
     if write_error is not None:
-        return EXIT_PARTIAL if settings.json_output else EXIT_FAILURE
+        # The result still reached the user (JSON payload or stdout dump):
+        # that is a partial outcome, not a hard "no result" failure.
+        if settings.json_output or dumped_to_stdout:
+            return EXIT_PARTIAL
+        return EXIT_FAILURE
     return EXIT_PARTIAL if result.partial else EXIT_OK
 
 

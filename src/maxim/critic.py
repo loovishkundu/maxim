@@ -19,7 +19,7 @@ import json
 from collections.abc import Iterator
 
 from .config import Settings
-from .llm import LLM, SourceDoc, dump_for_prompt
+from .llm import LLM, LLMError, SourceDoc, dump_for_prompt
 from .prompts import COVERAGE_SYSTEM, CRITIC_SYSTEM
 from .schemas import (
     ClaimVerdict,
@@ -126,14 +126,17 @@ async def critique(
         payload = build_payload(brief, [finding], source_cache) + _ESCALATION_NOTE.format(
             verdict=claim_verdict.verdict
         )
-        arbitration = await llm.parse(
-            stage=stage,
-            system=CRITIC_SYSTEM,
-            messages=[{"role": "user", "content": payload}],
-            output_format=CritiqueResult,
-            model=settings.critic_escalation_model,
-            effort=settings.critic_escalation_effort,
-        )
+        try:
+            arbitration = await llm.parse(
+                stage=stage,
+                system=CRITIC_SYSTEM,
+                messages=[{"role": "user", "content": payload}],
+                output_format=CritiqueResult,
+                model=settings.critic_escalation_model,
+                effort=settings.critic_escalation_effort,
+            )
+        except LLMError:
+            continue  # keep the (conservative) batch verdict
         for v in arbitration.verdicts:
             if _normalize_id(v.finding_id) == norm_id:
                 verdicts[norm_id] = v
@@ -148,15 +151,21 @@ async def critique(
             *(f"- {claim}" for claim in claims_for_coverage),
         ]
     )
-    coverage: CoverageResult = await llm.parse(
-        stage=stage,
-        system=COVERAGE_SYSTEM,
-        messages=[{"role": "user", "content": coverage_payload}],
-        output_format=CoverageResult,
-        model=settings.critic_model,
-        effort=settings.critic_effort,
-    )
-    return CritiqueResult(verdicts=list(verdicts.values()), coverage_gaps=coverage.coverage_gaps)
+    try:
+        coverage: CoverageResult = await llm.parse(
+            stage=stage,
+            system=COVERAGE_SYSTEM,
+            messages=[{"role": "user", "content": coverage_payload}],
+            output_format=CoverageResult,
+            model=settings.critic_model,
+            effort=settings.critic_effort,
+        )
+        coverage_gaps = coverage.coverage_gaps
+    except LLMError:
+        # Coverage is the least load-bearing call: losing it must never
+        # discard the verdicts already materialized for this pass.
+        coverage_gaps = []
+    return CritiqueResult(verdicts=list(verdicts.values()), coverage_gaps=coverage_gaps)
 
 
 def _stamp_confidence(finding: Finding, verdict: Verdict) -> Confidence:

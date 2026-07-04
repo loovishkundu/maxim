@@ -616,3 +616,13 @@ async def test_engagement_stamped_through_run_researcher():
     dossier = await _run(llm)
 
     assert all(f.evidence[0].engagement == stats for f in dossier.findings)
+
+
+async def test_pass1_failure_with_nothing_validated_raises_for_retry():
+    # An empty ok=True dossier would read as healthy, bypass the
+    # orchestrator's researcher retry, and exit 0 — it must raise instead.
+    llm = ScriptedLLM(drafts=[], critiques=[], draft_error_on=1)
+    import pytest
+
+    with pytest.raises(LLMError):
+        await _run(llm)

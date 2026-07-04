@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable
 
 from .config import Settings
-from .llm import LLM, LLMError
+from .llm import LLM
 from .methods import apply_canonical_names, canonical_names, canonicalize_methods
 from .planner import make_plan
 from .quality import report_violations
@@ -161,7 +161,11 @@ async def run_pipeline(
         mapping: dict[str, str] = {}
         if methods_union:
             progress("canonicalizer", f"normalizing {len(set(methods_union))} method names…")
-            mapping = await canonicalize_methods(methods_union, settings, llm)
+            try:
+                mapping = await canonicalize_methods(methods_union, settings, llm)
+            except Exception as exc:  # a naming nicety must never kill the run
+                warnings.append(f"canonicalization failed ({exc}) — keeping original names")
+                mapping = {}
             dossiers = [apply_canonical_names(d, mapping) for d in dossiers]
         canonical = canonical_names(mapping)
 
@@ -206,9 +210,9 @@ async def run_pipeline(
                     pulse=pulse,
                     on_text=on_synthesis_text,
                 )
-            except LLMError as exc:
+            except Exception as exc:
                 # The research is already paid for — degrade to the raw dump
-                # rather than losing the run.
+                # rather than losing the run, whatever the exception type.
                 synthesis_failed = True
                 fallback_reason = f"synthesis failed: {exc}"
             else:
@@ -239,7 +243,7 @@ async def run_pipeline(
                             canonical_methods=canonical,
                             pulse=pulse,
                         )
-                    except LLMError as exc:
+                    except Exception as exc:
                         warnings.append(f"report repair pass failed: {exc}")
                     else:
                         repaired_violations = report_violations(repaired.text, known_ids)

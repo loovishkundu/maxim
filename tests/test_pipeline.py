@@ -48,6 +48,8 @@ class FakeLLM:
         fail_once_perspectives=frozenset(),
         synth_stop_reason="end_turn",
         synth_raises=False,
+        synth_raises_generic=False,
+        canon_raises=False,
         synth_texts=None,
         perspectives=("ai_agentic", "statistics"),
     ):
@@ -59,6 +61,8 @@ class FakeLLM:
             synth_stop_reason if isinstance(synth_stop_reason, list) else [synth_stop_reason]
         )
         self.synth_raises = synth_raises
+        self.synth_raises_generic = synth_raises_generic
+        self.canon_raises = canon_raises
         self.synth_texts = list(synth_texts) if synth_texts else [GOOD_SYNTH]
         self.synth_calls = 0
         self.perspectives = perspectives
@@ -75,6 +79,8 @@ class FakeLLM:
         if output_format is ResearchPlan:
             return make_plan(self.perspectives)
         if output_format is CanonicalMethods:
+            if self.canon_raises:
+                raise ValueError("unexpected canonicalizer crash")
             return CanonicalMethods(
                 groups=[
                     MethodGroup(
@@ -141,6 +147,8 @@ class FakeLLM:
     ):
         if self.synth_raises:
             raise LLMError("synthesizer: API call failed: 529 overloaded")
+        if self.synth_raises_generic:
+            raise RuntimeError("raw httpx.ReadError: connection reset mid-stream")
         self.synth_calls += 1
         text = self.synth_texts.pop(0) if len(self.synth_texts) > 1 else self.synth_texts[0]
         if len(self.synth_stop_reasons) > 1:
@@ -475,3 +483,31 @@ async def test_first_gather_failure_is_retried_and_heals(monkeypatch):
     assert len(by_perspective["statistics"].findings) == 3
     assert any("retrying with a fresh conversation" in w for w in result.warnings)
     assert not any(w.startswith("statistics: failed —") for w in result.warnings)
+
+
+async def test_unexpected_synthesis_exception_still_produces_fallback(monkeypatch):
+    # A raw (non-LLMError) exception after 100% of research spend must
+    # degrade to the fallback report, never crash out of run_pipeline.
+    _install(monkeypatch, synth_raises_generic=True)
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert result.partial
+    assert any("synthesis failed" in w for w in result.warnings)
+    assert "STL decomposition" in result.report_markdown  # research preserved
+
+
+async def test_canonicalizer_crash_degrades_to_original_names(monkeypatch):
+    _install(monkeypatch, canon_raises=True)
+    result = await orchestrator.run_pipeline(
+        "topic",
+        _settings(),
+        progress=lambda *_: None,
+        confirm=lambda plan: True,
+    )
+    assert any("canonicalization failed" in w for w in result.warnings)
+    # Run completed with original method names.
+    assert any(d.findings for d in result.dossiers)
