@@ -1,9 +1,15 @@
 # Maxim — project instructions
 
-## Linting (mandatory before every commit)
+## Commits
+
+- Keep commits **small and atomic**: one self-contained change per commit
+  (a feature slice, a fix, a doc update — never several unrelated things).
+  Prefer a sequence of small commits over one big one.
+
+## Linting (mandatory before every commit and before every push)
 
 Always run all three, in this order, and fix anything they report **before**
-committing:
+committing — and run them again before the final push:
 
 ```bash
 uv run isort .
@@ -11,7 +17,7 @@ uv run black .
 uv run ruff check .
 ```
 
-Never commit with any of the three failing. All are configured in
+Never commit or push with any of the three failing. All are configured in
 `pyproject.toml` (line length 100, py312); isort uses the black profile so the
 tools agree with each other.
 
@@ -21,6 +27,13 @@ tools agree with each other.
   trailers, no "Generated with Claude" lines, no AI attribution of any kind.
 - Keep them simple and direct: a short imperative subject line; a brief body
   only when the change genuinely needs explanation.
+
+## Before every push
+
+- Update **README.md** to reflect whatever is being pushed, and verify it:
+  read it against the actual code/CLI behavior (features, flags, layout,
+  exit codes) so nothing in it is stale or wrong.
+- Re-run the lint gate (above) and `uv run pytest` one final time.
 
 ## Testing
 
