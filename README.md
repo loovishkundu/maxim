@@ -91,6 +91,18 @@ with its weaknesses disclosed and confidence capped, never silently.
 Timeouts are graceful: researchers stop at a soft deadline and salvage
 validated findings instead of losing the run.
 
+### Failure handling
+
+Every API call runs through a [pyresilience](https://github.com/AhsanSheraz/pyresilience)
+policy: transient failures (connection drops, 429, 5xx/529) retry with
+exponential backoff and jitter; 4xx client errors never retry; a circuit
+breaker per call type fails remaining calls fast once the API is clearly
+down. Above that, a researcher that dies outright gets one
+fresh-conversation retry before its section is given up, one that dies
+mid-run salvages its already-validated findings from a checkpoint, and
+every failure or retry is announced in the live progress stream the moment
+it happens — not discovered in the report 20 minutes later.
+
 ## Requirements
 
 - [uv](https://docs.astral.sh/uv/) (Python package/project manager)

@@ -273,7 +273,7 @@ releases. Optional M3: `maxim-mcp` as an `--extra mcp`, ~60 lines over `pipeline
 ## 11. Dependencies
 
 Runtime (M1 — exactly four): `anthropic`, `pydantic>=2`, `python-dotenv`, `rich`.
-M2 adds `httpx` (pinned explicitly) for custom tools. Dev: `pytest`, `ruff` (present) +
+M2 adds `httpx` (custom tools) and `pyresilience` (API-layer retry/circuit-breaker). Dev: `pytest`, `ruff` (present) +
 **`pytest-asyncio`**, `respx` (recorded fixtures). Deliberately excluded: LangChain/CrewAI,
 typer/click (argparse suffices), tenacity (SDK retries + tiny helpers), tavily-python
 (server-side web search covers it — note this in `.env.example`).
