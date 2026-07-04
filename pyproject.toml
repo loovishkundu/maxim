@@ -47,3 +47,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+addopts = "-m 'not calibration'"
+markers = [
+    "calibration: judge-drift checks against the live API (costs money); run with: uv run pytest -m calibration",
+]
