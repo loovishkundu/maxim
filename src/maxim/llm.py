@@ -17,6 +17,7 @@ import anthropic
 from pydantic import BaseModel, ValidationError
 
 from .config import Settings
+from .resilience import CircuitOpenError, api_resilient
 from .usage import UsageLedger
 
 T = TypeVar("T", bound=BaseModel)
@@ -46,6 +47,43 @@ def thinking_kwargs(model: str, effort: str) -> dict[str, Any]:
 
 _TOOL_RESULT_TYPES = {"web_search_tool_result", "web_fetch_tool_result", "tool_result"}
 _TOOL_USE_TYPES = {"server_tool_use", "tool_use"}
+
+
+# One resilience policy (retry + circuit breaker) per request shape. The
+# breaker is per decorated function, so a failing stage type opens its own
+# breaker without blocking the others.
+@api_resilient()
+async def _parse_request(client: anthropic.AsyncAnthropic, **kwargs: Any) -> Any:
+    return await client.messages.parse(**kwargs)
+
+
+@api_resilient()
+async def _stream_request(client: anthropic.AsyncAnthropic, **kwargs: Any) -> Any:
+    async with client.messages.stream(**kwargs) as stream:
+        return await stream.get_final_message()
+
+
+@api_resilient()
+async def _stream_text_request(
+    client: anthropic.AsyncAnthropic,
+    on_text: Callable[[str], None] | None,
+    emitted: dict[str, int],
+    **kwargs: Any,
+) -> Any:
+    """Streamed text with exactly-once on_text delivery across retries.
+
+    `emitted` persists across retry attempts (same dict object), so a retry
+    replays only the suffix the callback has not seen yet.
+    """
+    async with client.messages.stream(**kwargs) as stream:
+        if on_text is not None:
+            seen = 0
+            async for chunk in stream.text_stream:
+                seen += len(chunk)
+                if seen > emitted["chars"]:
+                    on_text(chunk[-(seen - emitted["chars"]) :])
+                    emitted["chars"] = seen
+        return await stream.get_final_message()
 
 
 class LLMError(RuntimeError):
@@ -239,7 +277,8 @@ class LLM:
         last_error: Exception | None = None
         for _attempt in range(self.settings.max_parse_retries + 1):
             try:
-                response = await self.client.messages.parse(
+                response = await _parse_request(
+                    self.client,
                     model=model,
                     max_tokens=max_tokens,
                     system=_system_blocks(system),
@@ -247,8 +286,13 @@ class LLM:
                     output_format=output_format,
                     **thinking_kwargs(model, effort),
                 )
-            except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
-                # SDK already retried transport-level failures; treat as fatal.
+            except (
+                anthropic.APIConnectionError,
+                anthropic.APIStatusError,
+                CircuitOpenError,
+            ) as exc:
+                # The SDK and the resilience layer already retried transient
+                # failures; whatever reaches here is fatal for this call.
                 raise LLMError(f"{stage}: API call failed: {exc}") from exc
             self.ledger.record(stage, model, response.usage)
             stop_reason = getattr(response, "stop_reason", None)
@@ -342,7 +386,8 @@ class LLM:
             if container_id is not None:
                 request_kwargs["container"] = container_id
             try:
-                async with self.client.messages.stream(
+                final = await _stream_request(
+                    self.client,
                     model=model,
                     max_tokens=max_tokens,
                     system=_system_blocks(system),
@@ -350,9 +395,12 @@ class LLM:
                     tools=api_tools,
                     **thinking_kwargs(model, effort),
                     **request_kwargs,
-                ) as stream:
-                    final = await stream.get_final_message()
-            except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
+                )
+            except (
+                anthropic.APIConnectionError,
+                anthropic.APIStatusError,
+                CircuitOpenError,
+            ) as exc:
                 raise LLMError(f"{stage}: API call failed: {exc}") from exc
             self.ledger.record(stage, model, final.usage)
             new_container_id = getattr(getattr(final, "container", None), "id", None)
@@ -468,18 +516,21 @@ class LLM:
     ) -> StreamResult:
         """Plain streamed generation returning the concatenated text + stop reason."""
         try:
-            async with self.client.messages.stream(
+            final = await _stream_text_request(
+                self.client,
+                on_text,
+                {"chars": 0},
                 model=model,
                 max_tokens=max_tokens,
                 system=_system_blocks(system),
                 messages=messages,
                 **thinking_kwargs(model, effort),
-            ) as stream:
-                if on_text is not None:
-                    async for chunk in stream.text_stream:
-                        on_text(chunk)
-                final = await stream.get_final_message()
-        except (anthropic.APIConnectionError, anthropic.APIStatusError) as exc:
+            )
+        except (
+            anthropic.APIConnectionError,
+            anthropic.APIStatusError,
+            CircuitOpenError,
+        ) as exc:
             raise LLMError(f"{stage}: API call failed: {exc}") from exc
         self.ledger.record(stage, model, final.usage)
         if final.stop_reason == "refusal":
