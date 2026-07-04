@@ -140,7 +140,7 @@ async def test_critique_batches_and_runs_coverage_once():
     coverage_calls = [c for c in llm.calls if c["format"] is CoverageResult]
     assert len(batch_calls) == 3  # 8 + 8 + 4
     assert len(coverage_calls) == 1
-    assert all(c["model"] == "claude-haiku-4-5" for c in batch_calls)
+    assert all(c["model"] == "claude-opus-4-8" for c in batch_calls)
     assert len(result.verdicts) == 20
     assert result.coverage_gaps == ["gap 1"]
     # Batch payloads must not double-report coverage.
@@ -188,6 +188,5 @@ async def test_unsupported_on_skipped_evidence_does_not_escalate():
         settings=Settings(),
         llm=llm,
     )
+    # Everything stayed in the batch pass: no arbitration call was made.
     assert not any("arbitrating reviewer" in c["content"] for c in llm.calls)
-    # No opus involved anywhere: everything stayed on the batch model.
-    assert all(c["model"] == "claude-haiku-4-5" for c in llm.calls)

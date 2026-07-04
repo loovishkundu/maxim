@@ -3,7 +3,7 @@
 Wave-1 researchers name methods independently; without canonicalization
 "XGBoost" and "gradient boosted trees" fragment the landscape table and the
 community wave researches the same method twice. String normalization handles
-casing/whitespace; one cheap haiku call merges true synonyms. Degrades to the
+casing/whitespace; one cheap low-effort call merges true synonyms. Degrades to the
 normalized identity mapping on any LLM failure — canonicalization is a
 quality boost, never a run-breaker.
 """

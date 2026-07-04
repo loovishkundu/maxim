@@ -20,7 +20,7 @@ class ModelPricing:
 # Estimates (USD per million tokens). Update as published pricing changes.
 PRICING: dict[str, ModelPricing] = {
     "claude-opus-4-8": ModelPricing(5.00, 25.00),
-    "claude-haiku-4-5": ModelPricing(1.00, 5.00),
+    "claude-sonnet-5": ModelPricing(3.00, 15.00),
 }
 CACHE_READ_MULTIPLIER = 0.1
 CACHE_WRITE_MULTIPLIER = 1.25
@@ -130,15 +130,16 @@ class Settings:
     quiet: bool = False
     json_output: bool = False
 
+    # Model lineup: Opus 4.8 for everything that thinks and searches
+    # (planning, research, critique, canonicalization); Sonnet 5 writes the
+    # report. No Haiku anywhere.
     planner_model: str = "claude-opus-4-8"
     researcher_model: str = "claude-opus-4-8"
-    # Cheap where the volume is, smart where the stakes are: haiku judges
-    # batches; contradicted/unreliable/split verdicts get opus arbitration.
-    critic_model: str = "claude-haiku-4-5"
+    critic_model: str = "claude-opus-4-8"
     critic_escalation_model: str = "claude-opus-4-8"
     critic_batch_size: int = 8
-    canonicalizer_model: str = "claude-haiku-4-5"
-    synthesizer_model: str = "claude-opus-4-8"
+    canonicalizer_model: str = "claude-opus-4-8"
+    synthesizer_model: str = "claude-sonnet-5"
 
     planner_effort: str = "medium"
     critic_effort: str = "low"

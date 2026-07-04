@@ -2,8 +2,8 @@
 
 > Status: M2 implemented — five-loop state machine with per-depth thresholds,
 > two-wave fan-out with method canonicalization, community sentiment rigor,
-> reputation tiers, custom client-side tools, haiku-batch critic with opus
-> escalation, and a deterministic report quality gate. M3 (Claude skill,
+> reputation tiers, custom client-side tools, a batched critic with
+> single-finding arbitration, and a deterministic report quality gate. M3 (Claude skill,
 > calibration suite, golden-report test) still to come.
 > Maxim replaces manual internet-scrolling when you start a new feature: it scopes the topic,
 > researches it from multiple perspectives in parallel, verifies every claim against its source,
@@ -148,8 +148,8 @@ Algolia/GitHub for community). **Every fetched page and tool result is captured 
    confidence capped at `low` (never silently pass, never wrongly kill). Stamps tier + recency.
 4. **LLM CRITIQUE** — a **fresh conversation**: the critic sees only claim + quote +
    ±500 chars of cached source context, never the researcher's reasoning or search trail.
-   Batched 8 findings/call on `claude-haiku-4-5`; `contradicted`/`source_unreliable`/split
-   verdicts escalate one-by-one to `claude-opus-4-8` (effort=low) for arbitration.
+   Batched 8 findings/call on `claude-opus-4-8` (effort=low); `contradicted`/
+   `source_unreliable`/split verdicts are re-arbitrated one-by-one in a fresh call.
    Also reports `coverage_gaps` against the brief's sub-questions.
 
 **Five loops, named precisely:**
@@ -173,7 +173,7 @@ wall clock. On exhaustion: emit partial dossier of validated-only findings,
 ## 6. Community sentiment (the reviews requirement)
 
 Runs as wave 2, seeded with the **canonicalized union of methods wave 1 actually found**
-(canonicalization = string normalization + one cheap haiku call; without it "XGBoost" and
+(canonicalization = string normalization + one cheap low-effort call; without it "XGBoost" and
 "gradient boosted trees" fragment the landscape table). Stricter gates than other researchers
 because HN/Reddit/GitHub are noisy:
 
@@ -191,8 +191,10 @@ because HN/Reddit/GitHub are noisy:
 
 ## 7. Model strategy & cost
 
-All Opus 4.8 unless noted; adaptive thinking (omitted on models that reject it, e.g.
-haiku); **no `temperature`/`top_p`/`top_k` anywhere** (they 400 on Opus 4.8). Byte-stable
+Opus 4.8 for everything that thinks and searches (planner, researchers, critic,
+canonicalizer); Sonnet 5 writes the report; adaptive thinking everywhere (guarded per
+model in code); **no `temperature`/`top_p`/`top_k` anywhere** (they 400 on Opus 4.8/
+Sonnet 5). Byte-stable
 system prompts with `cache_control: ephemeral`. (An earlier draft planned cache-warm
 staggered fan-out — fire one researcher, await first token, then the rest. Dropped as
 vacuous: prompt caching is a prefix match over tools+system, each perspective has a
@@ -205,18 +207,14 @@ researcher's own multi-turn loop instead.)
 | Planner | opus-4-8 | medium | `messages.parse`; scoping quality gates everything downstream |
 | Researchers ×5 | opus-4-8 | medium (high at `--deep`) | streamed, manual loop; dominant cost (search results land as input tokens) |
 | Mechanical verify | — | — | zero LLM |
-| Critic | haiku-4-5 batched → opus-4-8 (low) escalation | | cheap where volume is, smart where stakes are |
-| Canonicalizer | haiku-4-5 | low | one call between waves |
-| Synthesizer | opus-4-8 | high | `messages.stream`, `max_tokens=32K` (streaming mandatory at this size) |
+| Critic | opus-4-8 batched, effort=low; single-finding arbitration | | low effort where volume is, focus where stakes are |
+| Canonicalizer | opus-4-8 | low | one call between waves |
+| Synthesizer | sonnet-5 | high | `messages.stream`, `max_tokens=32K` (streaming mandatory at this size) |
 
 **Target: standard run ≈ $5–8, under ~10 min.** `--quick` ≈ $2–3 (fewer iterations/tool
 uses); `--deep` ≈ $15–25 (larger budgets, effort=high researchers). Pricing lives in
 `config.py` labeled as an estimate; the `UsageLedger` also meters **web-search per-use fees**
 and enforces `--budget-usd` between loop iterations. Cost prints in the end-of-run table.
-
-Do **not** hardcode assumptions about Haiku's server-tool support for a `--quick` researcher
-mode — verify against live docs when building it; try the same tool config first and only
-change it if the API rejects it.
 
 ## 8. Report format
 
@@ -307,8 +305,8 @@ synthesizer → markdown report → CLI with rich progress → FakeLLM tests →
 + canonicalization + community wave) with semaphore and graceful timeouts; complete
 five-loop state machine with per-depth thresholds; `reputation.py` tiers + recency half-lives
 + tier-mix badge; sentiment rigor (corroboration, floors, aboutness, `insufficient_data`,
-`how_people_test_it`); custom tools with graceful no-key degradation; haiku-batch + opus
-escalation critic; full report template incl. Caveats + rejected appendix; `--quick`/`--deep`,
+`how_people_test_it`); custom tools with graceful no-key degradation; batched critic with
+single-finding arbitration; full report template incl. Caveats + rejected appendix; `--quick`/`--deep`,
 `--json`, budget gate; prompt-cache verification test.
 
 **M3 — integration and hardening** (req 9): Claude Code skill authored and tested in-repo;

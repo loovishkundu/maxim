@@ -5,11 +5,12 @@ quotes, and an excerpt of the actual cached source text around the quote. That
 isolation is deliberate: a critic reading the researcher's narrative gets
 seduced by it.
 
-Verdicts are judged in haiku batches (cheap where the volume is). High-stakes
-outcomes — contradicted, source_unreliable, or an unsupported verdict against
+Verdicts are judged in batches at low effort. High-stakes outcomes —
+contradicted, source_unreliable, or an unsupported verdict against
 mechanically verified evidence (the judge disagreeing with the quote matcher)
-— are re-arbitrated one-by-one on the escalation model. Coverage gaps are
-judged once against the full claim list, since a batch only sees its slice.
+— are re-arbitrated one-by-one in a fresh single-finding call. Coverage gaps
+are judged once against the full claim list, since a batch only sees its
+slice.
 """
 
 from __future__ import annotations

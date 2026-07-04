@@ -31,7 +31,7 @@ maxim "topic"
 │   per researcher:                                              │
 │   GATHER ──▶ DRAFT ──▶ MECHANICAL VERIFY ──▶ CRITIQUE          │
 │     ▲        (web + paper    (quote-in-source   (fresh-context │
-│     │         search tools)   match, 0 LLM)      haiku→opus)   │
+│     │         search tools)   match, 0 LLM)      + arbitration)│
 │     │                                               │          │
 │     └── RETRY / RE-VALIDATE / REPLAN ◀── decide()  ◀┘          │
 │         (bounded, deterministic routing — never LLM judgment)  │
@@ -39,7 +39,7 @@ maxim "topic"
                              ▼
                 ┌────────────────────────┐
                 │ CANONICALIZE methods   │  "XGBoost" ≡ "gradient
-                │ (one haiku call)       │   boosted trees"
+                │ (one low-effort call)  │   boosted trees"
                 └────────────┬───────────┘
                              ▼
 ┌────────────────────────────────────────────────────────────────┐
@@ -151,8 +151,8 @@ Citations are the product. The chain, in order:
    rubric, never by the model.
 3. **Fresh-context critique** — a critic that never sees the researcher's
    conversation judges each claim strictly against its quotes and the cached
-   source context (haiku in batches; contradicted or split verdicts are
-   re-arbitrated one-by-one on opus).
+   source context (batched at low effort; contradicted or split verdicts are
+   re-arbitrated one-by-one in a fresh call).
 4. **Community corroboration** — sentiment claims need ≥2 independent
    qualifying threads (engagement floors from real metadata); below 3 threads
    a method's pulse renders as *insufficient data*, never a guess.
@@ -189,7 +189,7 @@ src/maxim/       # pipeline stages, one module each
   loop.py        #   deterministic retry/re-validate/replan routing
   verification.py#   mechanical quote-in-source matching (zero LLM)
   reputation.py  #   source tiers A–D, recency half-lives, SEO blocklist
-  critic.py      #   fresh-context critique: haiku batches + opus escalation
+  critic.py      #   fresh-context critique: batched verdicts + arbitration
   sentiment.py   #   community floors, corroboration, per-method pulse
   methods.py     #   method-name canonicalization between waves
   quality.py     #   deterministic report-quality gate
